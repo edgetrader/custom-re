@@ -1,0 +1,27 @@
+# Local-only: project notes, data and generated output
+CLAUDE.md
+data/
+output/
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.pkl
+*.db
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.ipynb_checkpoints/

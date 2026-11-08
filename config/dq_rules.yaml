@@ -1,0 +1,131 @@
+# Data quality rules for the Custom RE quarterly KPI extract.
+# Tolerances are absolute (fractions, e.g. 0.005 = 0.5 percentage points).
+
+reporting_date: "2026-06-30"
+
+# The fund universe expected in each extract.
+expected_fund_count: 60
+
+valid_currencies: [AUD, EUR, GBP, HKD, JPY, SGD, USD]
+
+# Datapoints per category and the value field each must use (num | date | str).
+datapoints:
+  Fund Info:
+    AIA Effective Interest in Fund: num
+    Assets under development: num
+    Bad debts: num
+    Base fee incurred to-date: num
+    Carried interest incurred to-date: num
+    Completed assets: num
+    End of fund term: date
+    End of investment period: date
+    Fund GAV: num
+    Fund LTV (current): num
+    Fund LTV Cap: num
+    Fund NAV: num
+    Fund Since Inception Net IRR: num
+    Fund Target Net IRR: num
+    Fund inception date: date
+    Portfolio average occupancy rate: num
+    Proportion of fixed rate debt: num
+    Start of fund term: date
+    Start of investment period: date
+    Weighted average cost of debt: num
+  GAV Composition:
+    Cash & Near Cash: num
+    Others: num
+    Real Estate Investments (Immovable Property): num
+  Exposure - Geography:
+    Country: str
+    Country Percentage: num
+    Region Level 1: str
+    Region Level 2: str
+  Exposure - Sector:
+    Sector - level 1: str
+    Sector - level 2: str
+    Portfolio sector percentage (by GAV) - total portfolio: num
+    Portfolio sector percentage (by GAV) - total portfolio Sector Level 1: num
+    Average occupancy rate (%) - completed assets Sector Level 1: num
+    Average occupancy rate (%) - completed assets Sector Level 2: num
+  Debt Maturity:
+    Debt maturity value: num
+  Projection:
+    Capital call amount: num
+    Distribution amount: num
+
+# Forward-looking calendars, derived from reporting_date so they roll each quarter.
+# Each is `periods` period-ends of pandas `freq` (YE/QE/ME) strictly after the reporting
+# date, after skipping the first `skip` of them.
+debt_maturity_calendar: {freq: YE, periods: 10, skip: 0}
+# A fund's projection dates must match exactly one of these calendars.
+# Monthly projections in the 2026Q2 extract start in August, so the first month-end is skipped.
+projection_calendars:
+  monthly: {freq: ME, periods: 18, skip: 1}
+  quarterly: {freq: QE, periods: 6, skip: 0}
+
+# Ratios that must lie in [0, 1].
+fraction_datapoints:
+  - AIA Effective Interest in Fund
+  - Assets under development
+  - Completed assets
+  - Fund LTV (current)
+  - Fund LTV Cap
+  - Portfolio average occupancy rate
+  - Proportion of fixed rate debt
+  - Weighted average cost of debt
+  - Cash & Near Cash
+  - Others
+  - Real Estate Investments (Immovable Property)
+  - Country Percentage
+  - Portfolio sector percentage (by GAV) - total portfolio
+  - Portfolio sector percentage (by GAV) - total portfolio Sector Level 1
+  - Average occupancy rate (%) - completed assets Sector Level 1
+  - Average occupancy rate (%) - completed assets Sector Level 2
+
+# Currency amounts that must be non-negative.
+amount_datapoints:
+  - Bad debts
+  - Base fee incurred to-date
+  - Carried interest incurred to-date
+  - Fund GAV
+  - Fund NAV
+  - Debt maturity value
+  - Capital call amount
+  - Distribution amount
+
+# Plausibility bounds (warnings, not hard errors).
+irr_bounds: [-0.5, 0.5]
+max_bad_debt_to_gav: 0.01
+max_fees_to_gav: 0.15
+
+# Allowed labels.
+region_continents: [Americas, Asia Pacific, Europe]
+sector_level1: [Industrial, Office, Others, Residential, Retail]
+
+# Fund-life dates must be in this order (each pair: earlier <= later).
+date_order:
+  - [Fund inception date, Start of fund term]
+  - [Start of fund term, Start of investment period]
+  - [Start of investment period, End of investment period]
+  - [End of investment period, End of fund term]
+
+tolerances:
+  sum_to_one: 0.005          # mix percentages summing to 100%
+  rollup: 0.005              # sector L2 -> L1 aggregation
+  lifecycle_split: 0.005     # completed + under development = 1
+  occupancy_weighted: 0.02   # fund occupancy vs GAV-weighted sector occupancy
+  ltv_vs_nav_gap: 0.005      # LTV may exceed 1 - NAV/GAV by at most this
+  debt_vs_ltv_low: 0.8       # total debt maturities / (LTV x GAV)
+  debt_vs_ltv_high: 1.2
+
+# IQR multiplier for cross-fund outlier detection.
+outlier_iqr_k: 1.5
+outlier_metrics:
+  - Fund LTV (current)
+  - Fund Since Inception Net IRR
+  - Portfolio average occupancy rate
+  - Weighted average cost of debt
+  - Proportion of fixed rate debt
+  - nav_to_gav
+  - fees_to_gav
+  - bad_debt_to_gav
