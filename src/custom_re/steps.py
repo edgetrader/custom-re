@@ -2,9 +2,10 @@
 
 Step 1 matches the extract's funds to the GP reference both ways. Step 2 counts, per fund, the datapoints
 that have a value (a zero, or "none" for a none-when-missing datapoint, counts) and places the fund in a
-completeness band. Step 3 takes the funds in the top band and rates each datapoint Good, Use with caution
-or Unusable from the validity and consistency checks, naming the funds behind each rating. Everything is
-per fund, so amounts in different currencies are never combined.
+completeness band. Step 3 takes the funds in the top band, rates each fund's value Good, Use with caution
+or Unusable from the validity and consistency checks, and classifies each datapoint Fully usable, Usable
+with caveats, Partially usable or Unusable from the share of funds whose value is valid, naming the funds
+behind it. Everything is per fund, so amounts in different currencies are never combined.
 """
 
 from __future__ import annotations
@@ -44,18 +45,27 @@ COMPLETENESS_COLUMNS = ["band", "gp", "fund", "currency", "with_values", "total"
                         "missing_datapoints"]
 GAPS = (NOT_REPORTED, NO_VALUE)  # states with no value; everything else (incl. zero and none) has one
 
-# Step 3 ratings, best first.
+# Step 3 rating of one fund's value, best first.
 GOOD, CAUTION, UNUSABLE = "Good", "Use with caution", "Unusable"
 RATINGS = [GOOD, CAUTION, UNUSABLE]
 _WORST = {GOOD: 0, CAUTION: 1, UNUSABLE: 2}
-# Per datapoint. funds_with_value / funds_assessed is the completeness across the assessed funds;
+# Step 3 classification of a datapoint across the assessed funds, best first (thresholds: `usability` in
+# the rules). Unusable is shared with the fund rating.
+FULLY, CAVEATS, PARTIAL_USE = "Fully usable", "Usable with caveats", "Partially usable"
+CLASSES = [FULLY, CAVEATS, PARTIAL_USE, UNUSABLE]
+# Fund-wide errors (a fund but no datapoint) and the rules list of datapoints they affect; any other
+# fund-wide error affects every datapoint. Two currencies in a fund only undermine its amounts.
+FUND_WIDE_SCOPE = {"mixed_currency": "amount_datapoints"}
+# Per datapoint. funds_with_value / funds_assessed is the completeness across the assessed funds; rating is
+# the classification (CLASSES) and valid_share the share of funds with a value whose own value has no error
+# (an error across funds is not in it; it makes the datapoint Unusable through the rating);
 # usable_funds (a list, counted by n_usable) are the funds rated Good with a value, and why_usable says
 # what their values were checked for. caution and unusable are lists of (reason, [funds]) pairs, reason
 # first in plain words; *_funds are the funds with that rating. Fund lists are real lists, never joined
 # strings, so names containing commas are counted correctly.
 USABILITY_COLUMNS = ["category", "datapoint", "funds_assessed", "funds_with_value", "completeness", "rating",
-                     "n_usable", "usable_funds", "why_usable", "caution_funds", "caution", "unusable_funds",
-                     "unusable", "no_value_funds"]
+                     "valid_share", "n_usable", "usable_funds", "why_usable", "caution_funds", "caution",
+                     "unusable_funds", "unusable", "no_value_funds"]
 ALL_FUNDS = "All assessed funds"  # stands in for the fund list of a problem that applies across funds
 DETAIL_COLUMNS = ["gp", "fund", "category", "datapoint", "rating", "reasons", "notes"]
 # Gap checks are covered by step 2 and reference checks by step 1; neither rates a value.
@@ -243,18 +253,40 @@ def completeness(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -> pd.
 # ---------------------------------------------------------------- step 3
 
 
+def classify(n_value: int, n_unusable: int, n_caution: int, across_error: bool, across_warning: bool,
+             thresholds: dict[str, float]) -> str:
+    """Classify one datapoint from its funds' ratings, using the `usability` thresholds from the rules.
+
+    `n_value` counts the assessed funds with a value (a fund with an error on the datapoint counts);
+    `n_unusable` and `n_caution` count those whose value has an error or a warning. `across_error` and
+    `across_warning` mark an error or warning on the datapoint across funds.
+    """
+    if not n_value or across_error:
+        return UNUSABLE
+    valid = (n_value - n_unusable) / n_value
+    if valid < thresholds["partial_min_valid"]:
+        return UNUSABLE
+    if valid < thresholds["usable_min_valid"]:
+        return PARTIAL_USE
+    few_warnings = n_caution / n_value <= thresholds["fully_usable_max_caution"]
+    if not n_unusable and not across_warning and few_warnings:
+        return FULLY
+    return CAVEATS
+
+
 def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
               comp: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Rate each datapoint for the funds in the top completeness band.
 
-    Per fund and datapoint: Unusable when a check raises an error on it (or a fund-wide error, such as two
-    currencies in one fund), Use with caution when a check raises a warning, Good otherwise. Caveats that
-    do not change the rating (zeros, partly blank series, fund-life dates, anonymised or derived figures,
-    outliers) are kept as notes. A missing value names the fund but does not change the rating; step 2
-    already counts it. Each datapoint takes the worst rating of any fund. An error or warning on a datapoint
-    but no single fund (e.g. a label mapping that conflicts across funds) rates the datapoint itself and
-    is shown as "(across funds)"; it does not appear in the per fund detail. Any error with a fund but no
-    datapoint (today only mixed_currency) makes every value of that fund unusable.
+    Per fund and datapoint: Unusable when a check raises an error on it (or a fund-wide error in its
+    scope, see FUND_WIDE_SCOPE: two currencies in one fund only affect its amounts), Use with caution when
+    a check raises a warning, Good otherwise. Caveats that do not change the rating (zeros, partly blank
+    series, fund-life dates, anonymised or derived figures, outliers) are kept as notes. A missing value
+    names the fund but does not change the rating; step 2 already counts it. Each datapoint is then
+    classified by `classify` from the share of funds with a value whose value is valid, so one bad fund
+    no longer makes the whole datapoint Unusable. An error or warning on a datapoint but no single fund
+    (e.g. a label mapping that conflicts across funds) applies to every fund's value and is listed
+    against "All assessed funds"; it does not appear in the per fund detail.
 
     Returns (per datapoint: USABILITY_COLUMNS, per fund and datapoint: DETAIL_COLUMNS).
     """
@@ -294,8 +326,10 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
         text = plain(check)
         if pd.isna(dp):
             if sev == "error":
-                for each_dp in dp_cat:
-                    rate(fund, each_dp, UNUSABLE, text)
+                scope = rules[FUND_WIDE_SCOPE[check]] if check in FUND_WIDE_SCOPE else list(dp_cat)
+                for each_dp in scope:
+                    if each_dp in dp_cat:
+                        rate(fund, each_dp, UNUSABLE, text)
         elif dp in dp_cat:
             if sev == "error":
                 rate(fund, dp, UNUSABLE, text)
@@ -334,16 +368,18 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
     for fund in funds:
         for dp, cat in dp_cat.items():
             key = (fund, dp)
+            # A fund with no value is not rated, even if a check fired on it (e.g. a fund-wide currency
+            # error, or a value in the wrong field); the reason stays in `reasons`.
             no_value = states.get(key) in GAPS
             detail.append({
                 "gp": gp_of[fund], "fund": fund, "category": cat, "datapoint": dp,
-                "rating": "No value" if no_value and rating[key] == GOOD else rating[key],
+                "rating": "No value" if no_value else rating[key],
                 "reasons": "; ".join(t for _, t in reasons[key]),
                 "notes": "; ".join(dict.fromkeys(notes[key])),
             })
     det = pd.DataFrame(detail, columns=DETAIL_COLUMNS)
 
-    # Per datapoint: completeness across the assessed funds, worst rating, and the funds behind it.
+    # Per datapoint: completeness across the assessed funds, classification, and the funds behind it.
     rows = []
     for dp, cat in dp_cat.items():
         d = det[det["datapoint"] == dp]
@@ -352,16 +388,15 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
         by = {lvl: d[d["rating"] == lvl] for lvl in (GOOD, CAUTION, UNUSABLE)}
         # Cross-fund problems apply to every fund's value, so they are listed against all funds.
         across = {lvl: [t for lv, t in dp_level[dp] if lv == lvl] for lvl in (CAUTION, UNUSABLE)}
-        worst = (UNUSABLE if len(by[UNUSABLE]) or across[UNUSABLE]
-                 else CAUTION if len(by[CAUTION]) or across[CAUTION] else GOOD)
-
-
+        cls = classify(with_value, len(by[UNUSABLE]), len(by[CAUTION]), bool(across[UNUSABLE]),
+                       bool(across[CAUTION]), rules["usability"])
         # A problem across funds affects every fund's value, so no fund is then usable as is.
         usable = [] if across[UNUSABLE] + across[CAUTION] else sorted(by[GOOD]["fund"])
         caution_funds, unusable_funds = sorted(by[CAUTION]["fund"]), sorted(by[UNUSABLE]["fund"])
         rows.append({
             "category": cat, "datapoint": dp, "funds_assessed": len(d), "funds_with_value": with_value,
-            "completeness": with_value / len(d) if len(d) else 0.0, "rating": worst,
+            "completeness": with_value / len(d) if len(d) else 0.0, "rating": cls,
+            "valid_share": (with_value - len(by[UNUSABLE])) / with_value if with_value else 0.0,
             "n_usable": len(usable), "usable_funds": usable,
             "why_usable": why_usable(dp, cat, rules) if usable else "",
             "caution_funds": caution_funds,

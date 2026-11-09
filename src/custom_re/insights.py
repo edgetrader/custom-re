@@ -8,11 +8,9 @@ from typing import Any
 import pandas as pd
 
 from custom_re.steps import (
-    CAUTION,
-    GOOD,
+    CLASSES,
     MISSING_FROM_EXTRACT,
     NOT_IN_REFERENCE,
-    UNUSABLE,
     completeness,
     reference_check,
     usability,
@@ -35,6 +33,7 @@ class ReportData:
     usability: pd.DataFrame  # step 3, one row per datapoint
     detail: pd.DataFrame  # step 3, one row per fund and datapoint (workbook only)
     counts: dict[str, int]  # issues by severity
+    usability_thresholds: dict[str, float]  # the rules' `usability` section, stated on the page
 
 
 def plural(n: int, word: str, many: str | None = None) -> str:
@@ -55,13 +54,13 @@ def build_report(df: pd.DataFrame, issues: pd.DataFrame, rules: Rules, reference
     n_unlisted = int((ref["status"] == NOT_IN_REFERENCE).sum())
     n_missing = int((ref["status"] == MISSING_FROM_EXTRACT).sum())
     n_top = int((comp["band"] == top).sum())
-    rated = {r: int((usab["rating"] == r).sum()) for r in (GOOD, CAUTION, UNUSABLE)}
+    rated = {r: int((usab["rating"] == r).sum()) for r in CLASSES}
     summary = (f"{plural(n_ext, 'fund')} in the extract · {n_unlisted} not in the reference · "
                f"{n_missing} reference {'fund' if n_missing == 1 else 'funds'} missing · "
                f"{n_top} of {n_ext} {top} complete · ")
-    summary += (f"{plural(rated[GOOD], 'datapoint')} good, {rated[CAUTION]} use with caution, "
-                f"{rated[UNUSABLE]} unusable" if len(usab) else f"no fund is {top} complete, so no datapoint "
-                "was assessed")
+    rated_text = ", ".join(f"{rated[c]} {c.lower()}" for c in CLASSES)
+    summary += (f"datapoints: {rated_text}" if len(usab)
+                else f"no fund is {top} complete, so no datapoint was assessed")
     counts = {s: int((issues["severity"] == s).sum()) for s in ("error", "warning", "info")}
     return ReportData(period_label, pd.Timestamp(rules["reporting_date"]), source_name, summary, ref, comp,
-                      bands, usab, detail, counts)
+                      bands, usab, detail, counts, dict(rules["usability"]))

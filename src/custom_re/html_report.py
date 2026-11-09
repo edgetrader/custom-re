@@ -8,22 +8,30 @@ from pathlib import Path
 import pandas as pd
 
 from custom_re.insights import ReportData, plural
-from custom_re.steps import CAUTION, GOOD, MISSING_FROM_EXTRACT, NOT_IN_REFERENCE, UNUSABLE
+from custom_re.steps import (
+    CAVEATS,
+    CLASSES,
+    FULLY,
+    MISSING_FROM_EXTRACT,
+    NOT_IN_REFERENCE,
+    PARTIAL_USE,
+    UNUSABLE,
+)
 
-# Rating -> CSS class for its colour.
-R_CLASS = {GOOD: "ok", CAUTION: "care", UNUSABLE: "bad"}
+# Pill colour per datapoint classification.
+R_CLASS = {FULLY: "ok", CAVEATS: "care", PARTIAL_USE: "part", UNUSABLE: "bad"}
 
 # Inline so the file opens anywhere, offline, with no external requests; light and dark themes.
 CSS = """
 :root{--bg:#f6f5f2;--surface:#fff;--ink:#1d1f23;--muted:#5d636d;--line:#e3e1dc;--soft:#efede8;
 --ok:#1f7a4d;--ok-bg:#e5f3ea;--care:#9a5b00;--care-bg:#fbf0dc;--bad:#b3261e;--bad-bg:#fbe7e5;
---accent:#1d3c6e}
+--part:#a8420f;--part-bg:#fde9dc;--accent:#1d3c6e}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141518;--surface:#1c1e22;
 --ink:#e9e9ea;--muted:#a0a5ad;--line:#2d3036;--soft:#24272c;--ok:#5fc48f;--ok-bg:#173226;--care:#e3a649;
---care-bg:#352a17;--bad:#f08078;--bad-bg:#3a1d1b;--accent:#9db8e6}}
+--care-bg:#352a17;--bad:#f08078;--bad-bg:#3a1d1b;--part:#f0a070;--part-bg:#3a2518;--accent:#9db8e6}}
 :root[data-theme="dark"]{--bg:#141518;--surface:#1c1e22;--ink:#e9e9ea;--muted:#a0a5ad;--line:#2d3036;
 --soft:#24272c;--ok:#5fc48f;--ok-bg:#173226;--care:#e3a649;--care-bg:#352a17;--bad:#f08078;--bad-bg:#3a1d1b;
---accent:#9db8e6}
+--part:#f0a070;--part-bg:#3a2518;--accent:#9db8e6}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,
 "Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
@@ -51,7 +59,7 @@ tr.cat td{background:var(--soft);font-weight:700;font-size:13px}
 .pill{display:inline-block;white-space:nowrap;font-size:12px;font-weight:700;padding:2px 10px;
 border-radius:999px;color:var(--c);background:var(--c-bg)}
 .ok{--c:var(--ok);--c-bg:var(--ok-bg)}.care{--c:var(--care);--c-bg:var(--care-bg)}
-.bad{--c:var(--bad);--c-bg:var(--bad-bg)}
+.bad{--c:var(--bad);--c-bg:var(--bad-bg)}.part{--c:var(--part);--c-bg:var(--part-bg)}
 .muted{color:var(--muted)}.bad-text{color:var(--bad)}.care-text{color:var(--care)}
 details summary{cursor:pointer;white-space:nowrap}details[open] summary{margin-bottom:4px}
 .detail>div+div{margin-top:6px}ul.why{margin:2px 0 0;padding-left:18px}ul.why li{margin:2px 0}
@@ -143,19 +151,31 @@ def _reasons(label: str, css: str, groups: list[tuple[str, list[str]]]) -> str:
     return f'<div class="{css}"><b>{label}</b><ul class="why">{items}</ul></div>'
 
 
+def _thresholds(d: ReportData) -> str:
+    """One sentence stating the classification thresholds from the rules."""
+    t = d.usability_thresholds
+    full, part, care = (f"{t[k] * 100:.0f}%" for k in ("usable_min_valid", "partial_min_valid",
+                                                       "fully_usable_max_caution"))
+    return (f"Fully usable with no invalid value and warnings on at most {care} of funds; Usable with "
+            f"caveats when at least {full} are valid (or a warning affects every fund); Partially usable "
+            f"from {part} to under {full}; Unusable below {part}, when no fund has a value, or when an "
+            "error affects every fund.")
+
+
 def _step3(d: ReportData) -> str:
     u, top = d.usability, d.bands[0]
     n = int((d.completeness["band"] == top).sum())
     head = ('<section id="step3"><h2><span class="n">3</span>Datapoint usability</h2>'
             f'<p class="sub">For the {plural(n, "fund")} {top} complete: how many report each datapoint, '
-            'whether their values are usable, and for which funds. A datapoint is Unusable if any fund\'s '
-            'value fails validation, Use with caution if any fund\'s value needs review, and Good otherwise. '
+            'whether their values are usable, and for which funds. Each fund\'s value is Unusable if it '
+            'fails validation and Use with caution if it needs review. The datapoint is rated on the share '
+            f'of funds with a value whose value is valid: {_e(_thresholds(d))} '
             'A fund with no value is named but does not change the rating.</p>')
     if u.empty:
         return head + (f'<p class="sub">No fund is {_e(top)} complete, '
                        'so no datapoint was assessed.</p></section>')
     counts = " · ".join(f'<span class="pill {R_CLASS[r]}">{int((u["rating"] == r).sum())} {_e(r)}</span>'
-                        for r in (GOOD, CAUTION, UNUSABLE))
+                        for r in CLASSES)
     rows, cat = [], None
     for r in u.to_dict("records"):
         if r["category"] != cat:
@@ -176,7 +196,8 @@ def _step3(d: ReportData) -> str:
             f'<tr><td>{_e(r["datapoint"])}</td>'
             f'<td class="n">{valued} / {total} '
             f'<span class="muted">({r["completeness"] * 100:.0f}%)</span></td>'
-            f'<td><span class="pill {R_CLASS[r["rating"]]}">{_e(r["rating"])}</span></td>'
+            f'<td><span class="pill {R_CLASS[r["rating"]]}">{_e(r["rating"])}</span>'
+            f'<div class="muted n">{r["valid_share"] * 100:.0f}% valid</div></td>'
             f'<td class="usable">{_usable_for(r["usable_funds"], total)}</td>'
             f'<td class="detail">{"".join(parts)}</td></tr>')
     table = _table(["Datapoint", "Funds with value", "Rating", "Usable for", "Why"], rows)

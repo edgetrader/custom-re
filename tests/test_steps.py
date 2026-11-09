@@ -6,13 +6,15 @@ import pytest
 from custom_re.checks import run_all
 from custom_re.loader import tidy
 from custom_re.steps import (
-    CAUTION,
-    GOOD,
+    CAVEATS,
+    FULLY,
     IN_REFERENCE,
     MISSING_FROM_EXTRACT,
     NOT_IN_REFERENCE,
+    PARTIAL_USE,
     UNUSABLE,
     band_of,
+    classify,
     completeness,
     reference_check,
     usability,
@@ -91,42 +93,48 @@ def test_completeness_lists_missing_datapoints_and_bands(raw, rules):
 
 def test_clean_fixture_all_good(raw, rules):
     _, usab, detail = _run(raw, rules)
-    assert (usab["rating"] == GOOD).all() and len(usab) == 36
+    assert (usab["rating"] == FULLY).all() and len(usab) == 36 and (usab["valid_share"] == 1).all()
     # Caveats are notes in the detail, not ratings.
     notes = detail.set_index(["fund", "datapoint"])["notes"]
     assert "Only zero" in notes[("Fund A", "Carried interest incurred to-date")]
     assert "Anonymised" in notes[("Fund A", "Country")]
 
 
-def test_error_makes_datapoint_unusable_and_names_fund(raw, rules):
+def test_error_on_one_fund_makes_datapoint_partially_usable_and_names_fund(raw, rules):
     raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund LTV (current)"), "Value Num"] = 2.0
     _, usab, _ = _run(raw, rules)
     row = usab.set_index("datapoint").loc["Fund LTV (current)"]
-    assert row["rating"] == UNUSABLE and row["unusable_funds"] == ["Fund B"]
+    # 1 of 2 funds valid (50%): partially usable, not unusable.
+    assert row["rating"] == PARTIAL_USE and row["valid_share"] == 0.5 and row["unusable_funds"] == ["Fund B"]
     assert row["unusable"][0] == ("outside 0% to 100%", ["Fund B"])
     assert row["usable_funds"] == ["Fund A"] and "between 0% and 100%" in row["why_usable"]
 
 
-def test_warning_makes_datapoint_caution(raw, rules):
+def test_warning_makes_datapoint_usable_with_caveats(raw, rules):
     raw.loc[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Bad debts"), "Value Num"] = 5e6
     _, usab, _ = _run(raw, rules)
     row = usab.set_index("datapoint").loc["Bad debts"]
-    assert row["rating"] == CAUTION and row["caution_funds"] == ["Fund A"]
+    assert row["rating"] == CAVEATS and row["caution_funds"] == ["Fund A"] and row["valid_share"] == 1
 
 
 def test_missing_value_names_fund_without_changing_rating(raw, rules):
     _, usab, detail = _run(_drop(raw, "Fund B", ["Fund Target Net IRR"]), rules)
     row = usab.set_index("datapoint").loc["Fund Target Net IRR"]
-    assert row["rating"] == GOOD and row["no_value_funds"] == ["Fund B"]
+    assert row["rating"] == FULLY and row["no_value_funds"] == ["Fund B"]
     assert (row["funds_with_value"], row["funds_assessed"], row["completeness"]) == (1, 2, 0.5)
     assert row["usable_funds"] == ["Fund A"]
 
 
-def test_fund_wide_error_makes_every_datapoint_unusable_for_that_fund(raw, rules):
+def test_two_currencies_make_only_that_funds_amounts_unusable(raw, rules):
     raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund GAV"), "Currency"] = "EUR"
-    _, usab, _ = _run(raw, rules)
-    assert (usab["rating"] == UNUSABLE).all()
-    assert usab.set_index("datapoint").loc["Fund NAV", "unusable_funds"] == ["Fund B"]
+    _, usab, detail = _run(raw, rules)
+    u = usab.set_index("datapoint")
+    for dp in rules["amount_datapoints"]:
+        assert u.loc[dp, "rating"] == PARTIAL_USE and u.loc[dp, "unusable_funds"] == ["Fund B"]
+    # Ratios and dates do not depend on the currency.
+    assert u.loc["Fund LTV (current)", "rating"] == FULLY and u.loc["Fund inception date", "rating"] == FULLY
+    b = detail[detail["fund"] == "Fund B"].set_index("datapoint")["rating"]
+    assert (b[rules["amount_datapoints"]] == UNUSABLE).all() and b["Country Percentage"] != UNUSABLE
 
 
 def test_only_top_band_funds_are_assessed(raw, rules):
@@ -136,7 +144,7 @@ def test_only_top_band_funds_are_assessed(raw, rules):
     comp, usab, detail = _run(raw, rules)
     assert comp.set_index("fund").loc["Fund B", "band"] == "≤50%"
     assert set(detail["fund"]) == {"Fund A"}
-    assert usab.set_index("datapoint").loc["Fund GAV", "rating"] == GOOD
+    assert usab.set_index("datapoint").loc["Fund GAV", "rating"] == FULLY
 
 
 def test_no_fund_in_top_band(raw, rules):
@@ -169,3 +177,45 @@ def test_every_assessed_fund_is_counted_once_per_datapoint(raw, rules):
     for r in usab.to_dict("records"):
         parts = r["usable_funds"] + r["caution_funds"] + r["unusable_funds"] + r["no_value_funds"]
         assert sorted(parts) == ["Fund A", "Fund B"], r["datapoint"]
+
+
+T = {"usable_min_valid": 0.95, "partial_min_valid": 0.50, "fully_usable_max_caution": 0.05}
+
+
+@pytest.mark.parametrize(
+    ("n_value", "n_unusable", "n_caution", "across_error", "across_warning", "expected"),
+    [
+        (60, 0, 0, False, False, FULLY),
+        (60, 0, 3, False, False, FULLY),  # warnings on 5%: still fully usable
+        (60, 0, 4, False, False, CAVEATS),  # warnings on 6.7%
+        (60, 1, 0, False, False, CAVEATS),  # one invalid fund of 60: 98% valid
+        (60, 3, 0, False, False, CAVEATS),  # exactly 95% valid
+        (60, 4, 0, False, False, PARTIAL_USE),  # 93% valid
+        (60, 30, 0, False, False, PARTIAL_USE),  # exactly 50% valid
+        (60, 31, 0, False, False, UNUSABLE),  # 48% valid
+        (60, 0, 0, True, False, UNUSABLE),  # a problem across every fund
+        (60, 0, 0, False, True, CAVEATS),
+        (0, 0, 0, False, False, UNUSABLE),  # no fund has a value
+    ],
+)
+def test_classify_thresholds(n_value, n_unusable, n_caution, across_error, across_warning, expected):
+    assert classify(n_value, n_unusable, n_caution, across_error, across_warning, T) == expected
+
+
+def test_thresholds_come_from_the_rules(raw, rules):
+    rules["usability"] = {"usable_min_valid": 0.4, "partial_min_valid": 0.2, "fully_usable_max_caution": 0.0}
+    raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund LTV (current)"), "Value Num"] = 2.0
+    _, usab, _ = _run(raw, rules)
+    assert usab.set_index("datapoint").loc["Fund LTV (current)", "rating"] == CAVEATS  # 50% >= 40%
+
+
+def test_fund_without_a_value_is_not_counted_even_with_an_error(raw, rules):
+    """Two currencies make Fund B's amounts unusable, but a fund with no value is not rated or counted."""
+    raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund GAV"), "Currency"] = "EUR"
+    raw = _drop(raw, "Fund B", ["Fund NAV"])
+    _, usab, detail = _run(raw, rules)
+    nav = usab.set_index("datapoint").loc["Fund NAV"]
+    assert nav["funds_with_value"] == 1 and nav["no_value_funds"] == ["Fund B"]
+    assert nav["unusable_funds"] == [] and nav["valid_share"] == 1 and nav["rating"] == FULLY
+    b = detail.set_index(["fund", "datapoint"]).loc[("Fund B", "Fund NAV")]
+    assert b["rating"] == "No value" and b["reasons"] == "more than one currency in the fund"

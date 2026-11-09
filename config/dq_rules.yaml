@@ -79,6 +79,18 @@ completeness_bands:
   - {label: ">50%", above: 0.50}
   - {label: "≤50%", above: null}
 
+# Step 3: how each datapoint is classified from its funds' ratings. Shares are of the assessed funds that
+# have a value (a fund with no value is named but does not count). "Valid" = no error on that fund's value.
+#   Unusable:            no fund has a value, an error across funds, or valid share below partial_min_valid
+#   Partially usable:    valid share from partial_min_valid up to (not incl.) usable_min_valid
+#   Fully usable:        no fund with an error or a cross-fund warning, warning share at most
+#                        fully_usable_max_caution
+#   Usable with caveats: everything else (valid share at least usable_min_valid)
+usability:
+  usable_min_valid: 0.95
+  partial_min_valid: 0.50
+  fully_usable_max_caution: 0.05
+
 # Forward-looking calendars, derived from reporting_date so they roll each quarter.
 # Each is `periods` period-ends of pandas `freq` (YE/QE/ME) strictly after the reporting
 # date, after skipping the first `skip` of them.
