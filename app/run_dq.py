@@ -28,6 +28,7 @@ from custom_re.loader import load_rules, read_raw, tidy  # noqa: E402
 from custom_re.reference import add_gp, gp_map, read_reference  # noqa: E402
 from custom_re.report import write_report  # noqa: E402
 from custom_re.settings import load_settings, parse_period  # noqa: E402
+from custom_re.stages import NOT_ASSESSED, add_tiers, usability, usability_by_datapoint  # noqa: E402
 
 DEFAULT_SETTINGS = ROOT / "config" / "settings.yaml"
 REPORT_NAME = "dq_report.xlsx"
@@ -82,14 +83,20 @@ def main(argv: list[str] | None = None) -> int:
     issues = run_all(raw, df, rules, reference)
     summary = summarise(issues)
     out_dir = settings.period_output_dir(period)
-    fc = fund_completeness(df, rules, reference)
+    # Stage 1 tiers funds by completeness; stage 2 rates the datapoints of the analysable ones.
+    fc = add_tiers(fund_completeness(df, rules, reference), df, rules, issues)
     gc, dc = gp_completeness(fc, issues), datapoint_completeness(df, rules)
+    u = usability(df, rules, issues, fc)
+    grid = u[u["rating"] != NOT_ASSESSED].pivot(index=["gp", "fund"], columns="datapoint", values="rating")
+    grid = grid.reindex(columns=list(dict.fromkeys(u["datapoint"]))).reset_index()
     # GP first, then fund: the workbook's fund-level sheets carry the GP for filtering.
     metrics = add_gp(fund_metrics(df, rules["none_when_missing"]).reset_index(), reference)
     write_report(out_dir / REPORT_NAME, summary, add_gp(issues, reference),
                  metrics.set_index(["gp", "fund"]),
-                 {"GP Completeness": gc, "Fund Completeness": fc, "Datapoint Completeness": dc,
-                  "Datapoint Gaps": datapoint_gaps(df, rules, reference)})
+                 {"S1 GP Tiers": gc, "S1 Fund Tiers": fc, "S1 Datapoint Completeness": dc,
+                  "S1 Datapoint Gaps": datapoint_gaps(df, rules, reference),
+                  "S2 By Datapoint": usability_by_datapoint(u), "S2 Usability Grid": grid,
+                  "S2 Usability": u})
     # The HTML report is presentation: a bug there must not hide the Excel results or look like a
     # data-quality failure, so it is isolated here at the app boundary.
     html_ok = True
@@ -113,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
         full = int((sub["datapoints_with_value"] == total).sum())
         print(f"Completeness: {full} of {len(sub)} funds have a "
               f"non-zero value in all {total} datapoints; lowest {int(sub['datapoints_with_value'].min())}.")
+    if len(fc):
+        tiers = fc["tier"].value_counts().reindex([1, 2, 3, 4], fill_value=0)
+        rated = u[u["rating"] != NOT_ASSESSED]["rating"].value_counts()
+        print(f"Stage 1 tiers (1-4): {' / '.join(str(int(n)) for n in tiers)}  "
+              f"analysable: {int(fc['analysable'].sum())} of {len(fc)} funds")
+        print("Stage 2 ratings: " + ", ".join(f"{k} {int(v)}" for k, v in rated.items()))
     if len(gc):
         print(f"GPs: {len(gc)}  Funds expected: {int(gc['funds_expected'].sum())}  "
               f"missing from extract: {int(gc['funds_missing'].sum())}  "

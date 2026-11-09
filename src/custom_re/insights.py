@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from custom_re.checks import CHECK_GROUPS, calendar
@@ -22,7 +21,38 @@ from custom_re.completeness import (
     fund_completeness,
     gp_completeness,
 )
+from custom_re.facts import (
+    CALLS,
+    COMPLETED,
+    COUNTRY,
+    DEBT,
+    DISTS,
+    END_IP,
+    END_TERM,
+    IRR,
+    IRR_TARGET,
+    LTV,
+    LTV_CAP,
+    OCC_L1,
+    OCC_L2,
+    REGION_L1,
+    REGION_L2,
+    SECTOR_PCT_L1,
+    SECTOR_PCT_L2,
+)
+from custom_re.facts import any_positive as _any_positive
+from custom_re.facts import col as _col
+from custom_re.facts import date_col as _date_col
+from custom_re.facts import exact_debt as _exact_debt
 from custom_re.loader import RENAME, fund_info_wide
+from custom_re.stages import (
+    NOT_ASSESSED,
+    USABLE,
+    add_tiers,
+    usability,
+    usability_by_datapoint,
+    usability_by_fund,
+)
 
 Rules = dict[str, Any]
 
@@ -43,17 +73,6 @@ MAX_EXAMPLE_CHARS = 200
 # Tones order findings and colour them: bad blocks use, warn needs a decision, info is a caveat.
 TONE_ORDER = {"bad": 0, "warn": 1, "info": 2}
 
-# Datapoints whose meaning drives several findings.
-CALLS, DISTS, DEBT = "Capital call amount", "Distribution amount", "Debt maturity value"
-GAV, LTV, LTV_CAP = "Fund GAV", "Fund LTV (current)", "Fund LTV Cap"
-IRR, IRR_TARGET = "Fund Since Inception Net IRR", "Fund Target Net IRR"
-END_TERM, END_IP = "End of fund term", "End of investment period"
-COUNTRY, REGION_L1, REGION_L2 = "Country", "Region Level 1", "Region Level 2"
-SECTOR_PCT_L2 = "Portfolio sector percentage (by GAV) - total portfolio"
-SECTOR_PCT_L1 = "Portfolio sector percentage (by GAV) - total portfolio Sector Level 1"
-OCC_L1 = "Average occupancy rate (%) - completed assets Sector Level 1"
-OCC_L2 = "Average occupancy rate (%) - completed assets Sector Level 2"
-COMPLETED = "Completed assets"
 
 
 @dataclass
@@ -107,7 +126,10 @@ class ReportData:
     fund_completeness: pd.DataFrame  # one row per fund (extract or GP reference), most complete first
     datapoint_completeness: pd.DataFrame  # one row per datapoint, most complete first
     gaps: pd.DataFrame  # one row per datapoint and fund lacking a value (datapoint_gaps)
-    top_n: int  # funds shown as most and least complete
+    tiers: dict[str, Any]  # the rules' tier settings (labels, thresholds)
+    usability: pd.DataFrame  # stage 2: one row per fund and datapoint (stages.usability)
+    usability_by_datapoint: pd.DataFrame
+    usability_by_fund: pd.DataFrame
 
 
 # ---------------------------------------------------------------- formatting
@@ -142,22 +164,6 @@ def _plural(n: int, word: str, plural: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------- facts
-
-
-def _col(w: pd.DataFrame, name: str) -> pd.Series:
-    """Column of the fund frame, or all-NaN if the datapoint is absent."""
-    return w[name] if name in w else pd.Series(np.nan, index=w.index)
-
-
-def _date_col(w: pd.DataFrame, name: str) -> pd.Series:
-    """Date column of the fund frame; all-NaT if absent, so comparisons with a Timestamp never fail."""
-    return pd.to_datetime(_col(w, name), errors="coerce")
-
-
-def _any_positive(df: pd.DataFrame, dp: str) -> pd.Series:
-    """Per fund: does any period of series `dp` have a positive amount."""
-    s = df[df["datapoint"] == dp].groupby("fund")["value_num"].apply(lambda v: bool((v > 0).any()))
-    return s.astype(bool)
 
 
 def _empty_source_fields(raw: pd.DataFrame) -> list[str]:
@@ -321,16 +327,6 @@ def _observed(vals: pd.Series, kind: str, dp: str, amounts: set[str]) -> str:
     return _range(fmt_pct(lo), fmt_pct(hi))
 
 
-def _exact_debt(df: pd.DataFrame, w: pd.DataFrame, cfg: dict[str, Any]) -> bool:
-    """Return True if every fund's debt maturities total LTV × GAV to within a tiny relative tolerance."""
-    debt = df[df["datapoint"] == DEBT].groupby("fund")["value_num"].sum()
-    expected = (_col(w, LTV).astype(float) * _col(w, GAV).astype(float)).reindex(debt.index)
-    # The claim is about every fund, so a fund without a schedule or inputs makes it false.
-    if debt.empty or len(debt) < len(w) or expected.isna().any() or (expected == 0).any():
-        return False
-    return bool((((debt - expected) / expected).abs() <= cfg["exact_rel_tol"]).all())
-
-
 def _exact_occupancy_share(df: pd.DataFrame, w: pd.DataFrame, cfg: dict[str, Any]) -> bool:
     """Return True if, for every fund, GAV with sector occupancy equals the completed-assets share."""
     pct = df[df["datapoint"] == SECTOR_PCT_L2].set_index(["fund", "a1"])["value_num"]
@@ -370,6 +366,19 @@ def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: R
             f"{_plural(len(sub), 'issue')} across {_plural(sub['check'].nunique(), 'check')} and "
             f"{_plural(sub['fund'].nunique(), 'fund')}. Most frequent: {listed}.",
             "Correct at source and rerun. Every item, with its Excel row, is listed in dq_report.xlsx.",
+        ))
+
+    # Stage 1: funds whose completeness tier keeps them out of the datapoint analysis.
+    cfg_t = rules["tiers"]
+    low = fc[~fc["analysable"].astype(bool) & (fc["status"] != MISSING)]
+    if len(low):
+        listed = "; ".join(f"{cfg_t['labels'][int(str(t))]} (tier {int(str(t))}): {', '.join(g['fund'])}"
+                           for t, g in low.groupby("tier"))
+        out.append(Finding(
+            f"{_plural(len(low), 'fund')} {'is' if len(low) == 1 else 'are'} too incomplete for "
+            "datapoint analysis", "warn", "Completeness",
+            f"{listed}. Their gaps are listed by fund in Stage 1; Stage 2 marks them not assessed.",
+            "Ask the GPs of these funds for the missing datapoints, then rerun.",
         ))
 
     # Fund coverage against the GP reference: named funds, so managers can be chased directly.
@@ -561,8 +570,10 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
     report = pd.Timestamp(rules["reporting_date"])
     counts = {s: int((issues["severity"] == s).sum()) for s in ["error", "warning", "info"]}
     register = datapoint_register(df, raw, issues, rules)
-    fc = fund_completeness(df, rules, reference)
+    # Stage 1 tiers each fund; stage 2 rates the datapoints of the analysable ones.
+    fc = add_tiers(fund_completeness(df, rules, reference), df, rules, issues)
     gc = gp_completeness(fc, issues)
+    u = usability(df, rules, issues, fc)
     found = findings(df, raw, issues, rules, fc, reference)
     n_funds = df["fund"].nunique()
     catalogue = [dp for dps in rules["datapoints"].values() for dp in dps]
@@ -580,7 +591,6 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
     n_expected = int((fc["status"] != UNLISTED).sum())
     n_expected_reported = int((fc["status"] == REPORTED).sum())
     n_unlisted = int((fc["status"] == UNLISTED).sum())
-    n_all_valued = int((fc["datapoints_with_value"] == fc["datapoints_total"]).sum())
 
     blockers = [f.title.lower() for f in found if f.tone in ("bad", "warn")]
     if counts["error"]:
@@ -600,8 +610,10 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
         verdict = (f"{state}. Fit for fund-level reporting and comparison"
                    + (" where reported." if has_gaps else "."))
     detail = (f"{n_pass} of {len(summary)} automated checks passed, with {_plural(counts['error'], 'error')} "
-              f"and {_plural(counts['warning'], 'warning')}. {full} of {len(catalogue)} datapoints are "
-              f"filled for all {n_funds} funds.")
+              f"and {_plural(counts['warning'], 'warning')}. Stage 1: {int(fc['analysable'].sum())} of "
+              f"{len(fc)} funds are complete enough to analyse ({full} of {len(catalogue)} datapoints "
+              f"filled for every reported fund). Stage 2: {_usable_share(u)} of their datapoint values are "
+              "usable as reported.")
     if blockers:
         detail += " To confirm: " + "; ".join(blockers) + "."
 
@@ -620,12 +632,26 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
         (f"{len(catalogue)}", f"datapoints in {len(rules['datapoints'])} categories"),
         (f"{n_pass} / {len(summary)}", "checks passed"),
         (f"{n_ccy}", "currencies, one per fund"),
-        (f"{n_all_valued} / {n_funds}", f"funds with a value in all {len(catalogue)} datapoints"),
+        (f"{int(fc['analysable'].sum())} / {len(fc)}",
+         f"funds analysable (tier {_tier_span(rules)}, stage 2)"),
+        (_usable_share(u), "of their datapoint values usable as reported"),
     ]
     return ReportData(period_label, report, source_name, tone, verdict, detail, figures, register, found,
                       _check_groups(summary), flagged, counts, unassigned, gc, fc, dc,
-                      datapoint_gaps(df, rules, reference),
-                      int(rules["report"]["completeness_top_n"]))
+                      datapoint_gaps(df, rules, reference), rules["tiers"], u,
+                      usability_by_datapoint(u), usability_by_fund(u))
+
+
+def _tier_span(rules: Rules) -> str:
+    """Tiers covered by stage 2, e.g. "1–2"."""
+    top = int(rules["tiers"]["analysis_max_tier"])
+    return "1" if top == 1 else f"1–{top}"
+
+
+def _usable_share(u: pd.DataFrame) -> str:
+    """Share of assessed fund datapoints rated usable, as a whole percentage (— if none assessed)."""
+    a = u[u["rating"] != NOT_ASSESSED]
+    return f"{(a['rating'] == USABLE).mean() * 100:.0f}%" if len(a) else "—"
 
 
 def ratings_count(rows: list[DatapointUsability]) -> dict[str, int]:

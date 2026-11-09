@@ -20,8 +20,8 @@ def test_render_contains_sections_and_findings(raw, rules):
     page = render_html(rep, pd.Timestamp("2026-07-15 09:30"))
     assert page.startswith("<!doctype html>")
     assert "<title>Custom RE Q2 2026 Data Quality</title>" in page
-    for anchor in ['id="usability"', 'id="findings"', 'id="fund-completeness"', 'id="datapoint-completeness"',
-                   'id="register"', 'id="checks"', 'id="next"']:
+    for anchor in ['id="findings"', 'id="stage1"', 'id="datapoint-completeness"', 'id="stage2"',
+                   'id="checks"', 'id="register"', 'id="next"']:
         assert anchor in page
     for f in rep.findings:
         assert f.action.replace("'", "&#x27;") in page
@@ -55,12 +55,19 @@ def test_unassigned_errors_note(raw, rules):
     assert "apply to no single datapoint" in page
 
 
-def test_reporting_sentence_follows_the_data(raw, rules):
+def test_stage_sections_follow_the_data(raw, rules):
     page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
-    assert "Every fund reports all 36 datapoints." in page
-    raw = raw[~((raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund NAV"))].reset_index(drop=True)
+    assert "2 of 2 funds are complete enough to analyse" in page
+    assert "Every reported fund reaches tier 2 or better" in page
+    assert 'class="heat"' in page and "Fund A" in page[page.index('id="stage2"'):]
+    # Drop most of Fund B: it falls to tier 4, is named with its reason and left out of the grid.
+    keep = raw["Datapoint.Name"].isin(["Fund GAV", "Fund NAV", "Country", "Sector - level 1"])
+    raw = raw[(raw["Company"] == "Fund A") | keep].reset_index(drop=True)
     page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
-    assert "1 of 2 funds report all 36 datapoints" in page
+    stage1 = page[page.index('id="stage1"'):page.index('id="datapoint-completeness"')]
+    assert "Funds below tier 2: left out of Stage 2" in stage1 and "datapoints unanswered" in stage1
+    heat = page[page.index('class="heat"'):]
+    assert "Fund A" in heat and "Fund B" not in heat
 
 
 def test_datapoint_section_names_funds_by_gap(raw, rules):

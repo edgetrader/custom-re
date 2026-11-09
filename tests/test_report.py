@@ -84,7 +84,8 @@ def test_main_reads_period_file_and_writes_period_folder(raw, tmp_path):
     assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
     assert (tmp_path / "out" / "2026Q2" / "dq_management_report.html").exists()
     sheets = openpyxl.load_workbook(tmp_path / "out" / "2026Q2" / "dq_report.xlsx").sheetnames
-    assert sheets[-3:] == ["Fund Completeness", "Datapoint Completeness", "Datapoint Gaps"]
+    assert sheets[3:] == ["S1 GP Tiers", "S1 Fund Tiers", "S1 Datapoint Completeness", "S1 Datapoint Gaps",
+                          "S2 By Datapoint", "S2 Usability Grid", "S2 Usability"]
 
 
 def test_main_flags_extract_from_wrong_quarter(raw, tmp_path):

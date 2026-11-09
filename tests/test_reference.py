@@ -11,6 +11,7 @@ from custom_re.html_report import render_html
 from custom_re.insights import build_report
 from custom_re.loader import tidy
 from custom_re.reference import UNMAPPED, add_gp, read_reference
+from custom_re.stages import add_tiers
 from tests.conftest import build_fund, write_reference
 
 
@@ -106,7 +107,7 @@ def test_gp_roll_up_counts_and_ranks(raw, rules):
     ref = _ref([("GP One", "Fund A"), ("GP One", "Fund C"), ("GP Two", "Fund B")])
     df = tidy(raw)
     issues = run_all(raw, df, rules, ref)
-    fc = fund_completeness(df, rules, ref)
+    fc = add_tiers(fund_completeness(df, rules, ref), df, rules, issues)
     gc = gp_completeness(fc, issues)
     assert list(gc.columns) == GP_COLUMNS
     gc = gc.set_index("gp")
@@ -115,6 +116,8 @@ def test_gp_roll_up_counts_and_ranks(raw, rules):
     assert list(gc["rank"]) == [1, 2, 3]
     one = gc.loc["GP One"]
     assert (one["funds_expected"], one["funds_reported"], one["funds_missing"]) == (2, 1, 1)
+    # The missing fund is tier 4, so half of GP One's funds are analysable.
+    assert (one["funds_tier_1"], one["funds_tier_4"], one["analysable_share"]) == (1, 1, 0.5)
     assert one["errors"] >= 1  # fund_missing_from_extract is attributed to the GP
     unmapped = gc.loc[UNMAPPED]
     assert unmapped["funds_expected"] == 0 and unmapped["funds_reported"] == 1
@@ -125,7 +128,8 @@ def test_gp_with_funds_in_several_currencies_is_not_penalised(raw, rules):
     raw.loc[raw["Company"] == "Fund B", "Currency"] = "EUR"
     ref = _ref([("GP One", "Fund A"), ("GP One", "Fund B")])
     df = tidy(raw)
-    gc = gp_completeness(fund_completeness(df, rules, ref), run_all(raw, df, rules, ref))
+    issues = run_all(raw, df, rules, ref)
+    gc = gp_completeness(add_tiers(fund_completeness(df, rules, ref), df, rules, issues), issues)
     assert gc.iloc[0]["currencies"] == "EUR, GBP"
     assert gc.iloc[0]["errors"] == 0
 
@@ -153,11 +157,10 @@ def test_missing_and_unlisted_funds_are_named_findings(raw, rules):
 def test_html_shows_gp_section_and_funds_by_gp(raw, rules):
     ref = _ref([("GP One", "Fund A"), ("GP One", "Fund C"), ("GP Two", "Fund B")])
     page = render_html(_report(raw, rules, ref), pd.Timestamp("2026-07-15"))
-    assert 'id="gp-completeness"' in page
-    assert "1 of 2 GPs have funds missing from the extract" in page
-    assert page.index('id="gp-completeness"') < page.index('id="fund-completeness"')
-    assert "All 3 funds by GP" in page and "GP One · 2 funds" in page
-    assert MISSING in page
+    stage1 = page[page.index('id="stage1"'):page.index('id="datapoint-completeness"')]
+    assert "2 of 3 funds are complete enough to analyse" in stage1
+    assert "All 3 funds by GP" in stage1 and "GP One · 2 funds" in stage1
+    assert MISSING in stage1 and "Missing from the extract" in stage1
 
 
 def _cli_files(raw, tmp_path, rows):
@@ -173,8 +176,8 @@ def test_main_reference_override_and_workbook_gp_columns(raw, tmp_path):
     settings, other = _cli_files(raw, tmp_path, [("GP Z", "Fund A"), ("GP Z", "Fund B"), ("GP Z", "Fund Q")])
     main(["Q2 2026", "--settings", str(settings), "--reference", str(other)])
     wb = openpyxl.load_workbook(tmp_path / "out" / "2026Q2" / "dq_report.xlsx")
-    assert "GP Completeness" in wb.sheetnames
-    gp_rows = list(wb["GP Completeness"].iter_rows(min_row=2, values_only=True))
+    assert "S1 GP Tiers" in wb.sheetnames
+    gp_rows = list(wb["S1 GP Tiers"].iter_rows(min_row=2, values_only=True))
     assert [r[1] for r in gp_rows] == ["GP Z"]
     header = [c.value for c in wb["Issues"][1]]
     assert header.index("gp") == header.index("fund") - 1
@@ -199,7 +202,5 @@ def test_main_expected_fund_count_comes_from_reference(raw, tmp_path):
 def test_fund_section_counts_only_submitted_funds(raw, rules):
     ref = _ref([("GP One", "Fund A"), ("GP One", "Fund C"), ("GP Two", "Fund B")])
     rep = _report(raw, rules, ref)
-    page = render_html(rep, pd.Timestamp("2026-07-15"))
-    assert "Every fund reports all 36 datapoints." in page
-    assert "1 fund in the GP reference is missing from the extract and not counted here" in page
     assert ("2 / 3", "expected funds reported") in rep.figures
+    assert ("2 / 3", "funds analysable (tier 1–2, stage 2)") in rep.figures

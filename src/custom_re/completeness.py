@@ -37,7 +37,8 @@ FUND_COLUMNS = [
     "zero_datapoints",
 ]
 GP_COLUMNS = [
-    "rank", "gp", "funds_expected", "funds_reported", "funds_missing", "funds_all_valued",
+    "rank", "gp", "funds_expected", "funds_reported", "funds_missing", "funds_tier_1", "funds_tier_2",
+    "funds_tier_3", "funds_tier_4", "funds_analysable", "analysable_share", "funds_all_valued",
     "min_datapoints_with_value", "mean_datapoints_with_value", "datapoints_total", "records",
     "records_with_value", "value_share", "errors", "warnings", "currencies", "least_complete_fund",
 ]
@@ -80,7 +81,7 @@ def _flag_values(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     return sub.assign(present=present, valued=present & (~zero | none), positive=present & ~zero, blank=blank)
 
 
-def _states(df: pd.DataFrame, rules: Rules, funds: list[str]) -> pd.DataFrame:
+def datapoint_states(df: pd.DataFrame, rules: Rules, funds: list[str]) -> pd.DataFrame:
     """One row per (fund, datapoint) for `funds` × the catalogue: present, valued and state.
 
     State is VALUED, NONE (a "none when missing" datapoint with no positive value) or a gap from GAPS.
@@ -124,7 +125,7 @@ def fund_completeness(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -
         return pd.DataFrame(columns=FUND_COLUMNS)
     flags = _flag_values(df, rules)
     # Every catalogued datapoint for every fund, so a datapoint absent from the extract counts as missing.
-    per_dp = _states(df, rules, funds)
+    per_dp = datapoint_states(df, rules, funds)
 
     out = pd.DataFrame(index=pd.Index(funds, name="fund"))
     out["gp"] = [gps.get(f, UNMAPPED) for f in funds]
@@ -161,12 +162,13 @@ def fund_completeness(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -
 
 
 def gp_completeness(fc: pd.DataFrame, issues: pd.DataFrame) -> pd.DataFrame:
-    """Roll the fund table (from fund_completeness) up to one row per GP (GP_COLUMNS).
+    """Roll the tiered fund table (fund_completeness, then stages.add_tiers) up to one row per GP.
 
-    Only counts are combined, never amounts, so funds in different currencies can share a GP. GPs are
-    ranked by the share of their expected funds reported, then the average datapoints with a value per
-    reported fund, then the share of records with a value; funds missing from the reference are grouped
-    last under UNMAPPED. Error and warning counts come from issues on the GP's funds.
+    Only counts are combined, never amounts, so funds in different currencies can share a GP. Each GP
+    gets its funds per completeness tier. GPs are ranked by the share of their funds that are analysable
+    (tiers covered by stage 2), then the share of expected funds reported, then the average datapoints
+    with a value, then the share of records with a value; funds missing from the reference are grouped
+    last under UNMAPPED. Error and warning counts come from issues on the GP's funds. Returns GP_COLUMNS.
     """
     if fc.empty:
         return pd.DataFrame(columns=GP_COLUMNS)
@@ -184,6 +186,10 @@ def gp_completeness(fc: pd.DataFrame, issues: pd.DataFrame) -> pd.DataFrame:
             "funds_expected": int((funds["status"] != UNLISTED).sum()),
             "funds_reported": len(rep),
             "funds_missing": int((funds["status"] == MISSING).sum()),
+            **{f"funds_tier_{t}": int((funds["tier"] == t).sum()) for t in (1, 2, 3, 4)},
+            "funds_analysable": int(funds["analysable"].sum()),
+            # Missing funds count against the GP: the share is of all its funds, expected or not.
+            "analysable_share": float(funds["analysable"].mean()),
             "funds_all_valued": int((rep["datapoints_with_value"] == rep["datapoints_total"]).sum()),
             "min_datapoints_with_value": int(rep["datapoints_with_value"].min()) if len(rep) else 0,
             "mean_datapoints_with_value": float(rep["datapoints_with_value"].mean()) if len(rep) else 0.0,
@@ -200,16 +206,19 @@ def gp_completeness(fc: pd.DataFrame, issues: pd.DataFrame) -> pd.DataFrame:
     # Same rounding as the fund ranking, so float noise never splits a genuine tie.
     keys = pd.DataFrame({
         "_unmapped": out["gp"] == UNMAPPED,
+        "_analysable": out["analysable_share"].round(10),
+        # On equal shares, the GP with more analysable funds ranks first (2 of 2 above 1 of 1).
+        "_n_analysable": out["funds_analysable"],
         "_coverage": (out["funds_reported"] / out["funds_expected"].where(out["funds_expected"] > 0))
         .fillna(0.0).round(10),
         "_mean": out["mean_datapoints_with_value"].round(10),
         "_share": out["value_share"].round(10),
     })
     out = pd.concat([out, keys], axis=1).sort_values(
-        ["_unmapped", "_coverage", "_mean", "_share", "gp"], ascending=[True, False, False, False, True],
-        kind="stable")
+        ["_unmapped", "_analysable", "_n_analysable", "_coverage", "_mean", "_share", "gp"],
+        ascending=[True, False, False, False, False, False, True], kind="stable")
     out["rank"] = (
-        out[["_unmapped", "_coverage", "_mean", "_share"]]
+        out[["_unmapped", "_analysable", "_n_analysable", "_coverage", "_mean", "_share"]]
         .assign(_unmapped=lambda k: ~k["_unmapped"])  # rank() is descending: mapped GPs first
         .apply(tuple, axis=1).rank(method="min", ascending=False).astype(int)
     )
@@ -224,7 +233,7 @@ def datapoint_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     """
     cat = _catalogue(rules)
     funds = sorted(df["fund"].dropna().unique())
-    states = _states(df, rules, funds).reset_index()
+    states = datapoint_states(df, rules, funds).reset_index()
     by_dp = states.groupby("datapoint").agg(
         funds_reporting=("present", "sum"), funds_with_value=("valued", "sum"))
     counts = states.groupby(["datapoint", "state"]).size().unstack(fill_value=0)
@@ -258,7 +267,7 @@ def datapoint_gaps(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -> p
     """
     cat = _catalogue(rules)
     funds = sorted(df["fund"].dropna().unique())
-    states = _states(df, rules, funds).reset_index()
+    states = datapoint_states(df, rules, funds).reset_index()
     rows = states[states["state"] != VALUED].rename(columns={"state": "gap"})
     rows = rows.merge(cat[["category", "datapoint"]], on="datapoint")
     rows["note"] = [
