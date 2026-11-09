@@ -62,6 +62,14 @@ datapoints:
 none_when_missing:
   Bad debts: No bad debt
 
+# Scheduled amounts: each row is an amount on the date in the Date column. A blank, null, NA or zero
+# amount means nothing falls on that date, so it is a full answer, not a gap, and counts as 0 in totals.
+# A fund with no rows for one of these is still a gap (not reported).
+scheduled_amounts:
+  - Debt maturity value
+  - Capital call amount
+  - Distribution amount
+
 # Step 2: completeness bands by the share of the datapoint list a fund has values for (a zero, or
 # "none" for none_when_missing, counts). A fund goes in the first band whose `above` it exceeds; the
 # last band (above: null) takes the rest. Step 3 assesses the funds in the first band.

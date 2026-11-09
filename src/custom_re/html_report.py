@@ -118,7 +118,9 @@ def _step2(d: ReportData) -> str:
                    + _table(["GP", "Fund", "With values", "Share", "Missing datapoints"], trs))
     return ('<section id="step2"><h2><span class="n">2</span>Completeness</h2>'
             f'<p class="sub">Datapoints with a value out of the full list of {total}, per fund. '
-            'A zero counts as a value, and so does no bad debt (Bad debts not reported or blank).</p>'
+            'A zero counts as a value, and so does no bad debt (Bad debts not reported or blank). '
+            'For debt maturities, capital calls and distributions, a blank or zero amount on a schedule date '
+            'means nothing falls on that date.</p>'
             f'<div class="bands">{tiles}</div>{tables}</section>')
 
 

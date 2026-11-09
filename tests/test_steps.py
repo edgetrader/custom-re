@@ -61,6 +61,19 @@ def test_completeness_counts_zero_and_none_as_values(raw, rules):
     assert (comp["with_values"] == 36).all() and (comp["band"] == ">90%").all()
 
 
+def test_blank_schedule_counts_as_a_value_but_no_rows_is_a_gap(raw, rules):
+    raw["Value Num"] = raw["Value Num"].astype(object)
+    dist = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Distribution amount")
+    raw.loc[dist, "Value Num"] = None
+    raw = _drop(raw, "Fund A", ["Capital call amount"])
+    comp, usab, _ = _run(raw, rules)
+    a = comp.set_index("fund").loc["Fund A"]
+    assert a["with_values"] == a["total"] - 1
+    assert a["missing_datapoints"] == "Capital call amount"
+    dist = usab.set_index("datapoint").loc["Distribution amount"]
+    assert dist["funds_with_value"] == 2 and not dist["no_value_funds"]
+
+
 def test_completeness_lists_missing_datapoints_and_bands(raw, rules):
     raw["Value Num"] = raw["Value Num"].astype(object)
     raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund NAV"), "Value Num"] = "NA"

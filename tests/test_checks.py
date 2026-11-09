@@ -177,12 +177,16 @@ def test_no_debt_schedule_is_a_gap_not_a_mismatch(raw, rules):
     assert "debt_maturity_vs_ltv" not in serious
 
 
-def test_partly_blank_series_is_a_gap_and_debt_still_compared(raw, rules):
-    mask = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Debt maturity value")
-    raw.loc[raw.index[mask][0], "Value Num"] = None  # the only non-zero maturity
+@pytest.mark.parametrize("empty", [None, "NA", "n/a", "null"])
+def test_blank_scheduled_amount_means_nothing_on_that_date(raw, rules, empty):
+    raw["Value Num"] = raw["Value Num"].astype(object)
+    for dp in rules["scheduled_amounts"]:
+        mask = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == dp)
+        raw.loc[raw.index[mask][:2], "Value Num"] = empty
     gaps, serious = _gaps(raw, rules)
-    assert ("value_missing", "Fund A", "Debt maturity value") in gaps
-    assert "debt_maturity_vs_ltv" in serious  # the rest of the schedule totals 0, not LTV x GAV
+    assert not {g for g in gaps if g[0] == "value_missing" and g[1] == "Fund A"}
+    # The only non-zero maturity is now blank, i.e. zero: the schedule totals 0, not LTV x GAV.
+    assert "debt_maturity_vs_ltv" in serious
 
 
 def test_missing_core_input_is_a_warning(raw, rules):

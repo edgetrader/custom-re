@@ -376,7 +376,8 @@ def check_value_type(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     """Each row populates exactly the one value field its datapoint expects.
 
     A row with no value at all (blank, null or NA) is a gap (`value_missing`, info), except for
-    datapoints in `none_when_missing`, where it means "none". A value in the wrong field is an error.
+    datapoints in `none_when_missing`, where it means "none", and `scheduled_amounts`, where it means
+    nothing falls on that row's date. A value in the wrong field is an error.
     """
     kind_of = {d: k for dps in rules["datapoints"].values() for d, k in dps.items()}
     field = {"num": "value_num", "date": "value_date", "str": "value_str"}
@@ -387,7 +388,7 @@ def check_value_type(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     wrong = pd.concat({f: populated[f] != expected.eq(f) for f in field.values()}, axis=1).any(axis=1)
     # Non-numeric text is reported as non_numeric_value, so it is not a blank.
     empty = ~populated.any(axis=1) & expected.notna() & df["value_num_text"].isna()
-    none = df["datapoint"].isin(list(rules["none_when_missing"]))
+    none = df["datapoint"].isin([*rules["none_when_missing"], *rules["scheduled_amounts"]])
     bad = df[wrong & expected.notna() & ~empty]  # unknown datapoints are reported by the catalogue check
 
     def detail(r: pd.Series) -> str:
@@ -644,9 +645,9 @@ def check_business_rules(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
         out.append(_issue("lifecycle_split", "error",
                           f"Completed + under development = {split[fund]:.2%}", fund, "Completed assets"))
 
-    # Scheduled debt maturities should total current debt (LTV x GAV). Funds without a valued schedule
-    # do not report it: a gap listed by the coverage checks, so they are not compared here.
-    debt = _dp(df, "Debt maturity value").groupby("fund")["value_num"].sum(min_count=1).reindex(w.index)
+    # Scheduled debt maturities should total current debt (LTV x GAV). A blank amount on a schedule date
+    # is zero; funds with no schedule rows do not report it (a gap), so they stay NaN and are not compared.
+    debt = _dp(df, "Debt maturity value").groupby("fund")["value_num"].sum().reindex(w.index)
     expected_debt = ltv * safe_gav
     ratio = debt / expected_debt.where(expected_debt > 0)
     off = (ratio < tol["debt_vs_ltv_low"]) | (ratio > tol["debt_vs_ltv_high"])
