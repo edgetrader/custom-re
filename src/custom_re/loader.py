@@ -22,6 +22,7 @@ RENAME = {
     "Analysis1": "a1",
     "Analysis2": "a2",
     "Analysis3": "a3",
+    "Analysis4": "a4",
     "Value Num": "value_num",
     "Value Date": "value_date",
     "Value String": "value_str",
@@ -53,7 +54,8 @@ def read_raw(path: str | Path) -> pd.DataFrame:
 def tidy(raw: pd.DataFrame) -> pd.DataFrame:
     """Convert the raw KPI sheet to typed, tidy columns.
 
-    Columns outside RENAME are dropped; `check_unused_columns` verifies they are empty.
+    Columns outside RENAME are dropped; `check_unused_columns` verifies they are empty, and that Analysis4
+    (loaded as a4) is empty outside label rows.
     Null text (NULL_TEXT) in Value Num counts as no value. Other non-numeric text is kept in
     `value_num_text` so it can be reported.
     """
@@ -64,7 +66,7 @@ def tidy(raw: pd.DataFrame) -> pd.DataFrame:
     df = raw[list(RENAME)].rename(columns=RENAME).copy()
 
     # Export pads blanks with a single space; treat whitespace-only as missing.
-    for col in ["fund", "category", "datapoint", "currency", "a1", "a2", "a3", "value_str"]:
+    for col in ["fund", "category", "datapoint", "currency", "a1", "a2", "a3", "a4", "value_str"]:
         s = df[col].astype("string").str.strip()
         df[col] = s.mask(s == "")
 

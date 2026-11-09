@@ -37,7 +37,7 @@ Exit codes: 0 clean, 1 if any error-severity issue is found, 2 for a bad period,
 
 ## Checks
 
-The checks live in `src/custom_re/checks.py`; `CHECK_GROUPS` is the registry of all 49 check names. They are grouped as:
+The checks live in `src/custom_re/checks.py`; `CHECK_GROUPS` is the registry of all 47 check names. They are grouped as:
 
 - structure: reporting date, blank keys, fund count, unknown datapoints, datapoints missing everywhere
 - completeness: per-fund datapoint counts, datapoints not reported or without a value (info), time-series gaps for funds that report the series, projection frequency, exposure members, value field used
@@ -47,6 +47,8 @@ The checks live in `src/custom_re/checks.py`; `CHECK_GROUPS` is the registry of 
 - business: GAV/NAV/LTV relationships, lifecycle split, debt maturities vs LTV x GAV, fees, bad debts, date order
 - outlier: cross-fund IQR outliers
 - reference: incomplete or duplicate reference rows, funds in the extract but not in the reference, funds in the reference but missing from the extract
+
+Label datapoints (Country, Region Level 1, Region Level 2, Sector - level 1, Sector - level 2) take their value from Value String. Their Analysis1-4 columns may hold other values, so they are neither required nor compared with the label. Labels are matched to the percentage rows by value: countries, sub-regions and continents against Country Percentage Analysis1, 2 and 3, and sectors against the sector percentage Analysis1. Region rows are not mapped country by country, since they carry no reliable country key; the region sets are compared instead (`region_label_mismatch` was removed). Analysis4 is loaded but must be blank outside label rows. Countries and sectors must be unique per fund by Value String; region labels may repeat, since several countries share a region.
 
 Multiple currencies across funds are expected; only a fund reporting more than one currency (`mixed_currency`) or an invalid currency code is an issue. Funds with different projection calendars are reported as an info note.
 

@@ -8,7 +8,7 @@ Every issue names a check from CHECK_GROUPS, the single registry of check names.
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterable
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -49,11 +49,9 @@ CHECK_GROUPS = {
     "fraction_out_of_range": "validity",
     "negative_amount": "validity",
     "irr_implausible": "validity",
-    "label_key_mismatch": "validity",
     "label_not_allowed": "validity",
     "sum_to_one": "consistency",
     "sector_rollup": "consistency",
-    "region_label_mismatch": "consistency",
     "hierarchy_conflict": "consistency",
     "naming_note": "consistency",
     "occupancy_weighted": "consistency",
@@ -89,14 +87,13 @@ OCC_L2 = "Average occupancy rate (%) - completed assets Sector Level 2"
 OCC_FUND = "Portfolio average occupancy rate"
 GAV_COMPOSITION = ["Cash & Near Cash", "Others", "Real Estate Investments (Immovable Property)"]
 
-# Analysis columns each exposure datapoint must populate.
+# Label datapoints: the label is Value String. Their analysis columns may hold other values, so they are
+# neither required nor compared with the label.
+LABEL_DATAPOINTS = [COUNTRY, REGION_L1, REGION_L2, SECTOR_L1, SECTOR_L2]
+
+# Analysis columns each exposure percentage datapoint must populate.
 REQUIRED_DIMENSIONS = {
-    COUNTRY: ["a1"],
-    REGION_L1: ["a1"],
-    REGION_L2: ["a1"],
     COUNTRY_PCT: ["a1", "a2", "a3"],
-    SECTOR_L1: ["a1"],
-    SECTOR_L2: ["a1"],
     SECTOR_PCT_L1: ["a1"],
     SECTOR_PCT_L2: ["a1", "a2"],
     OCC_L1: ["a1"],
@@ -178,8 +175,17 @@ def calendar(reporting_date: str | pd.Timestamp, spec: dict[str, Any]) -> list[p
 
 
 def check_unused_columns(raw: pd.DataFrame) -> pd.DataFrame:
-    """Columns the loader drops must be empty, otherwise data would be lost silently."""
+    """Columns the loader drops must be empty, otherwise data would be lost silently.
+
+    Analysis4 is loaded but used by no check: it may hold other values on label rows only, so on any
+    other row it is reported like an unused column.
+    """
     out = []
+    a4 = raw["Analysis4"].notna() & (raw["Analysis4"].astype("string").str.strip() != "")
+    a4 &= ~raw["Datapoint.Name"].astype("string").str.strip().isin(LABEL_DATAPOINTS)
+    if a4.any():
+        out.append(_issue("unused_column_populated", "error",
+                          f"Column 'Analysis4' has {int(a4.sum())} values on non-label rows but is not used"))
     for col in raw.columns:
         if col in RENAME:
             continue
@@ -343,20 +349,24 @@ def check_dimensions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def check_exposure_completeness(df: pd.DataFrame) -> pd.DataFrame:
-    """Exposure label rows and percentage rows describe the same members per fund."""
+    """Exposure label rows and percentage rows describe the same members per fund.
+
+    Labels are the Value String of the label rows; the percentage rows name their member in an analysis
+    column (country in a1, sub-region in a2, continent in a3; sector in a1).
+    """
     out = []
-    # (label datapoint, percentage datapoint): members are compared on a1.
+    # (label datapoint, percentage datapoint, analysis column of the percentage rows holding the member)
     pairs = [
-        (COUNTRY, COUNTRY_PCT),
-        (REGION_L1, COUNTRY_PCT),
-        (REGION_L2, COUNTRY_PCT),
-        (SECTOR_L2, SECTOR_PCT_L2),
-        (SECTOR_L1, SECTOR_PCT_L1),
+        (COUNTRY, COUNTRY_PCT, "a1"),
+        (REGION_L1, COUNTRY_PCT, "a2"),
+        (REGION_L2, COUNTRY_PCT, "a3"),
+        (SECTOR_L2, SECTOR_PCT_L2, "a1"),
+        (SECTOR_L1, SECTOR_PCT_L1, "a1"),
     ]
     for fund, g in df.groupby("fund"):
-        for label_dp, pct_dp in pairs:
-            labels = set(_dp(g, label_dp)["a1"].dropna())
-            pcts = set(_dp(g, pct_dp)["a1"].dropna())
+        for label_dp, pct_dp, pct_col in pairs:
+            labels = set(_dp(g, label_dp)["value_str"].dropna())
+            pcts = set(_dp(g, pct_dp)[pct_col].dropna())
             # A side with no rows is a datapoint the fund does not report (a gap, listed separately).
             if labels and pcts and labels != pcts:
                 out.append(_issue("exposure_members_mismatch", "error",
@@ -408,10 +418,21 @@ def check_value_type(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
 
 
 def check_duplicate_keys(df: pd.DataFrame) -> pd.DataFrame:
-    """No two rows share fund, datapoint, date and analysis dimensions."""
-    dup = df[df.duplicated(KEY, keep=False)]
+    """No two rows share fund, datapoint, date and analysis dimensions.
+
+    Label rows have no reliable analysis key, so a country or sector label must instead be unique by its
+    Value String. Region labels repeat by design (several countries share a region), so they are not
+    checked here.
+    """
+    labels = df["datapoint"].isin(LABEL_DATAPOINTS)
+    other_dups = df[~labels & df.duplicated(KEY, keep=False)]
+    # Blank labels are value_missing gaps, not duplicates of each other.
+    named = df[df["datapoint"].isin([COUNTRY, SECTOR_L1, SECTOR_L2]) & df["value_str"].notna()]
+    label_dups = named[named.duplicated(["fund", "datapoint", "date", "value_str"], keep=False)]
+    dup = pd.concat([other_dups, label_dups])
     return _frame(_row_issues(dup, "duplicate_key", "error",
-                              lambda r: f"Duplicate key on {r['date']} / {r['a1']}"))
+                              lambda r: f"Duplicate key on {r['date']} / "
+                              f"{r['value_str'] if r['datapoint'] in LABEL_DATAPOINTS else r['a1']}"))
 
 
 # ---------------------------------------------------------------- validity
@@ -445,15 +466,8 @@ def check_ranges(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
 
 
 def check_labels(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Label rows echo their analysis key and use the allowed vocabularies."""
+    """Labels use the allowed vocabularies."""
     out = []
-    # Country and sector label rows repeat their a1 key as the string value.
-    for dp in [COUNTRY, SECTOR_L1, SECTOR_L2]:
-        rows = _dp(df, dp)
-        mismatch = rows["value_str"].fillna(BLANK) != rows["a1"].fillna(BLANK)
-        out += _row_issues(rows[mismatch], "label_key_mismatch", "error",
-                           lambda r: f"Label {r['value_str']!r} != key {r['a1']!r}")
-
     vocab_checks = [
         (REGION_L2, "value_str", rules["region_continents"]),
         (SECTOR_L1, "value_str", rules["sector_level1"]),
@@ -520,18 +534,8 @@ def check_hierarchies(df: pd.DataFrame) -> pd.DataFrame:
     """Country->region and sector L2->L1 mappings are consistent within and across funds."""
     out = []
     geo = _dp(df, COUNTRY_PCT)
-    # Within a fund, Region label rows agree with the Country Percentage dimensions.
-    # Outer join plus BLANK sentinel so a missing value on either side is a mismatch.
-    for label_dp, dim in [(REGION_L1, "a2"), (REGION_L2, "a3")]:
-        labels = _unique(_dp(df, label_dp), ["fund", "a1"], "value_str")
-        dims = _unique(geo, ["fund", "a1"], dim)
-        joined = pd.concat({"label": labels, "dim": dims}, axis=1).fillna(BLANK)
-        for idx, r in joined[joined["label"] != joined["dim"]].iterrows():
-            # Index is (fund, country); pandas-stubs types the label as a bare Hashable.
-            fund_name, country_name = cast("tuple[str, str]", idx)
-            out.append(_issue("region_label_mismatch", "error",
-                              f"{country_name}: {label_dp} {r['label']!r} vs Country % {dim} {r['dim']!r}",
-                              fund_name, label_dp))
+    # Region label rows have no reliable country key (their analysis columns may hold other values), so
+    # they are not mapped country by country; check_exposure_completeness compares the region sets.
 
     # Across funds, each child maps to exactly one parent (blank counts as a parent value).
     maps = [

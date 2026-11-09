@@ -46,9 +46,12 @@ def test_valid_fixture_has_no_errors_or_warnings(raw, rules):
         (lambda r: _set(r, "Fund A", "Region Level 2", "Mars", "Value String", a1="Country 01"),
          "label_not_allowed"),
         (lambda r: _set(r, "Fund A", "Region Level 1", "Oceania", "Value String", a1="Country 01"),
-         "region_label_mismatch"),
+         "exposure_members_mismatch"),
+        (lambda r: _set(r, "Fund A", "Fund GAV", "x", "Analysis4"), "unused_column_populated"),
         (lambda r: _set(r, "Fund A", "Sector - level 2", "Hotel", "Value String", a1="Office"),
-         "label_key_mismatch"),
+         "exposure_members_mismatch"),
+        (lambda r: _set(r, "Fund A", "Country", "Country 99", "Value String", a1="Country 01"),
+         "exposure_members_mismatch"),
         (lambda r: _set(r, "Fund A", "Fund NAV", 2e8), "nav_exceeds_gav"),
         (lambda r: _set(r, "Fund A", "Fund LTV Cap", 0.2), "ltv_above_cap"),
         (lambda r: _set(r, "Fund A", "Completed assets", 0.5), "lifecycle_split"),
@@ -123,7 +126,7 @@ def _issues(raw, rules):
     "dp",
     [
         "Portfolio sector percentage (by GAV) - total portfolio Sector Level 1",
-        "Region Level 1",
+        "Country",
         "Portfolio average occupancy rate",
         "Average occupancy rate (%) - completed assets Sector Level 2",
     ],
@@ -133,6 +136,13 @@ def test_duplicates_are_reported_not_crashing(raw, rules, dp):
     issues = _issues(pd.concat([raw, row], ignore_index=True), rules)
     assert "check_crashed" not in set(issues["check"])
     assert "duplicate_key" in set(issues["check"])
+
+
+def test_repeated_region_label_is_not_a_duplicate(raw, rules):
+    """Several countries share a region, so identical region rows are allowed and must not crash."""
+    row = raw[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Region Level 1")].iloc[[0]]
+    issues = _issues(pd.concat([raw, row], ignore_index=True), rules)
+    assert not {"check_crashed", "duplicate_key"} & set(issues["check"])
 
 
 def test_crashing_check_is_isolated(raw, rules):
@@ -153,7 +163,7 @@ def test_blank_country_region_dimension_is_flagged(raw, rules):
     mask = (raw["Company"] == "Fund A") & (raw["Analysis1"] == "Country 01") & (
         raw["Datapoint.Name"] == "Country Percentage")
     raw.loc[mask, "Analysis3"] = None
-    assert {"missing_dimension", "region_label_mismatch"} <= _flags(raw, rules)
+    assert "missing_dimension" in _flags(raw, rules)
 
 
 def test_missing_fund_occupancy_is_not_a_silent_pass(raw, rules):
@@ -315,3 +325,31 @@ def test_bad_debts_absent_for_every_fund_is_fine(raw, rules):
     raw = raw[raw["Datapoint.Name"] != "Bad debts"].reset_index(drop=True)
     _, serious = _gaps(raw, rules)
     assert "missing_datapoint" not in serious
+
+
+LABEL_DPS = ["Country", "Region Level 1", "Region Level 2", "Sector - level 1", "Sector - level 2"]
+
+
+@pytest.mark.parametrize("junk", [None, "Other value"])
+def test_label_analysis_columns_are_ignored(raw, rules, junk):
+    """Label datapoints take their value from Value String; the analysis columns may hold anything."""
+    mask = raw["Datapoint.Name"].isin(LABEL_DPS)
+    for col in ["Analysis1", "Analysis2", "Analysis3", "Analysis4"]:
+        raw.loc[mask, col] = junk
+    assert _flags(raw, rules) == set()
+
+
+def test_region_analysis1_naming_another_country_is_ignored(raw, rules):
+    mask = (raw["Company"] == "Fund A") & raw["Datapoint.Name"].isin(["Region Level 1", "Region Level 2"])
+    other = raw.loc[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Country"), "Value String"]
+    raw.loc[mask, "Analysis1"] = other.iloc[-1]  # a real country, but not the row's own
+    assert _flags(raw, rules) == set()
+
+
+def test_duplicate_label_is_found_by_value_string(raw, rules):
+    mask = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Country")
+    raw.loc[mask, "Analysis1"] = "Other value"
+    raw.loc[raw.index[mask][1], "Value String"] = raw.loc[raw.index[mask][0], "Value String"]
+    issues = _issues(raw, rules)
+    dups = issues[issues["check"] == "duplicate_key"]
+    assert set(dups["datapoint"]) == {"Country"} and len(dups) == 2
