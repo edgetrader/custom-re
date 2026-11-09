@@ -52,7 +52,9 @@ tr.cat td{background:var(--soft);font-weight:700;font-size:13px}
 border-radius:999px;color:var(--c);background:var(--c-bg)}
 .ok{--c:var(--ok);--c-bg:var(--ok-bg)}.care{--c:var(--care);--c-bg:var(--care-bg)}
 .bad{--c:var(--bad);--c-bg:var(--bad-bg)}
-.muted{color:var(--muted)}.detail p{margin:0}.detail p+p{margin-top:4px}
+.muted{color:var(--muted)}.bad-text{color:var(--bad)}.care-text{color:var(--care)}
+details summary{cursor:pointer;white-space:nowrap}details[open] summary{margin-bottom:4px}
+.detail p{margin:0}.detail p+p{margin-top:4px}
 ol.actions{margin:8px 0 0;padding-left:22px;max-width:120ch}ol.actions li{margin:6px 0}
 footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 @media print{body{background:#fff}section{break-inside:avoid}}
@@ -118,14 +120,23 @@ def _step2(d: ReportData) -> str:
             f'<div class="bands">{tiles}</div>{tables}</section>')
 
 
+def _fund_names(names: str, n_all: int) -> str:
+    """'All N funds' or 'K of N funds', with the names folded into a details element."""
+    funds = [f for f in names.split(", ") if f]
+    if not funds:
+        return '<span class="muted">None</span>'
+    head = f"All {n_all} funds" if len(funds) == n_all else f"{len(funds)} of {n_all} funds"
+    return f"<details><summary>{head}</summary>{_e(', '.join(funds))}</details>"
+
+
 def _step3(d: ReportData) -> str:
     u, top = d.usability, d.bands[0]
     n = int((d.completeness["band"] == top).sum())
     head = ('<section id="step3"><h2><span class="n">3</span>Datapoint usability</h2>'
-            f'<p class="sub">The {plural(n, "fund")} {top} complete are checked for validity '
-            'and consistency. '
-            'A datapoint is Unusable if any fund fails a check on it, Use with caution if any fund has a '
-            'warning on it, and Good otherwise; the funds concerned are named.</p>')
+            f'<p class="sub">For the {plural(n, "fund")} {top} complete: how many report each datapoint, '
+            'whether their values are usable, and for which funds. A datapoint is Unusable if any fund\'s '
+            'value fails validation, Use with caution if any fund\'s value needs review, and Good otherwise. '
+            'A fund with no value is named but does not change the rating.</p>')
     if u.empty:
         return head + (f'<p class="sub">No fund is {_e(top)} complete, '
                        'so no datapoint was assessed.</p></section>')
@@ -135,20 +146,27 @@ def _step3(d: ReportData) -> str:
     for r in u.to_dict("records"):
         if r["category"] != cat:
             cat = r["category"]
-            rows.append(f'<tr class="cat"><td colspan="3">{_e(cat)}</td></tr>')
+            rows.append(f'<tr class="cat"><td colspan="5">{_e(cat)}</td></tr>')
         parts = []
-        if r["unusable_funds"]:
-            parts.append(f"<p><b>Unusable for</b> {_e(r['unusable_funds'])}</p>")
-        if r["caution_funds"]:
-            parts.append(f"<p><b>Caution for</b> {_e(r['caution_funds'])}</p>")
-        if r["reasons"]:
-            parts.append(f'<p class="muted">Checks: {_e(r["reasons"])}</p>')
+        if r["why_usable"]:
+            others = r["unusable_funds"] or r["caution_funds"]
+            label = "Usable for the other funds because" if others else "Usable because"
+            parts.append(f"<p><b>{label}:</b> {_e(r['why_usable'])}.</p>")
+        if r["unusable"]:
+            parts.append(f'<p class="bad-text"><b>Unusable:</b> {_e(r["unusable"])}.</p>')
+        if r["caution"]:
+            parts.append(f'<p class="care-text"><b>Use with caution:</b> {_e(r["caution"])}.</p>')
         if r["no_value_funds"]:
-            parts.append(f'<p class="muted">No value: {_e(r["no_value_funds"])}</p>')
-        detail = "".join(parts) or f'<span class="muted">Good for all {n} funds</span>'
-        rows.append(f'<tr><td>{_e(r["datapoint"])}</td><td><span class="pill {R_CLASS[r["rating"]]}">'
-                    f'{_e(r["rating"])}</span></td><td class="detail">{detail}</td></tr>')
-    return head + f"<p>{counts}</p>" + _table(["Datapoint", "Rating", "Details"], rows) + "</section>"
+            parts.append(f'<p class="muted">No value: {_e(r["no_value_funds"])}.</p>')
+        total, valued = int(r["funds_assessed"]), int(r["funds_with_value"])
+        rows.append(
+            f'<tr><td>{_e(r["datapoint"])}</td>'
+            f'<td class="n">{valued} / {total} '
+            f'<span class="muted">({r["completeness"] * 100:.0f}%)</span></td>'
+            f'<td><span class="pill {R_CLASS[r["rating"]]}">{_e(r["rating"])}</span></td>'
+            f'<td>{_fund_names(r["usable_funds"], total)}</td><td class="detail">{"".join(parts)}</td></tr>')
+    table = _table(["Datapoint", "Funds with value", "Rating", "Usable for", "Why"], rows)
+    return head + f"<p>{counts}</p>" + table + "</section>"
 
 
 def _actions(d: ReportData) -> str:

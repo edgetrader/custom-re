@@ -14,6 +14,7 @@ from custom_re.steps import (
     NOT_IN_REFERENCE,
     UNUSABLE,
     completeness,
+    plain,
     reference_check,
     usability,
 )
@@ -66,27 +67,16 @@ def _actions(ref: pd.DataFrame, comp: pd.DataFrame, usab: pd.DataFrame, issues: 
                  "assessed in step 3 until completed." if len(below) else "")
         out.append(f"Ask GPs to supply the missing datapoints of {plural(len(gaps), 'fund')} (listed in "
                    f"step 2).{extra}")
-    for level, verb, col in [(UNUSABLE, "Correct at source", "unusable_funds"),
-                             (CAUTION, "Review the warnings on", "caution_funds")]:
-        rows = usab[usab["rating"] == level]
+    for verb, col in [("Correct at source", "unusable"), ("Review", "caution")]:
+        rows = usab[usab[col] != ""]
         if len(rows):
-            items = "; ".join(f"{r['datapoint']} ({_who(r[col], r['reasons'])})"
-                              for r in rows.to_dict("records"))
+            items = "; ".join(f"{r['datapoint']} ({r[col]})" for r in rows.to_dict("records"))
             out.append(f"{verb}: {items}.")
     other = _unshown_errors(issues, comp, usab, top)
     if len(other):
-        checks = ", ".join(sorted(set(other["check"])))
-        out.append(f"Fix {plural(len(other), 'other error')} not shown above ({checks}); "
-                   "see the Issues sheet.")
+        why = ", ".join(sorted({plain(str(c)) for c in other["check"]}))
+        out.append(f"Fix {plural(len(other), 'other error')} not shown above ({why}); see the Issues sheet.")
     return out
-
-
-def _who(funds: str, reasons: str) -> str:
-    """Funds behind a rating, plus "across funds" when a cross-fund issue also applies."""
-    across = "(across funds)" in reasons
-    if funds and across:
-        return f"{funds}, and across funds"
-    return funds or "across funds"
 
 
 # Errors that step 1 already explains by fund name.

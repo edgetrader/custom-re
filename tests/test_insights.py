@@ -30,7 +30,7 @@ def test_actions_follow_the_steps(raw, rules):
     assert "Add 1 fund to the GP reference, or correct the name: Fund B." in acts
     assert "missing from the extract: GP One: Fund C." in acts
     assert "missing datapoints of 1 fund" in acts
-    assert "Correct at source: Fund LTV (current) (Fund A)" in acts
+    assert "Correct at source: Fund LTV (current) (Fund A: outside 0% to 100%" in acts
     assert "1 not in the reference · 1 reference fund missing" in rep.summary
 
 
@@ -39,4 +39,4 @@ def test_errors_outside_step_3_still_get_an_action(raw, rules):
     raw = raw[(raw["Company"] == "Fund A") | raw["Datapoint.Name"].isin(keep)].reset_index(drop=True)
     raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund GAV"), "Value Num"] = -1.0
     acts = " | ".join(_report(raw, rules).actions)
-    assert "other error" in acts and "negative_amount" in acts
+    assert "other errors" in acts and "negative amount" in acts

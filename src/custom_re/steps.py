@@ -48,14 +48,89 @@ GAPS = (NOT_REPORTED, NO_VALUE)  # states with no value; everything else (incl. 
 GOOD, CAUTION, UNUSABLE = "Good", "Use with caution", "Unusable"
 RATINGS = [GOOD, CAUTION, UNUSABLE]
 _WORST = {GOOD: 0, CAUTION: 1, UNUSABLE: 2}
-USABILITY_COLUMNS = ["category", "datapoint", "rating", "unusable_funds", "caution_funds", "no_value_funds",
-                     "reasons"]
+# Per datapoint. funds_with_value / funds_assessed is the completeness across the assessed funds;
+# usable_funds are those rated Good with a value; why_usable says what their values were checked for;
+# caution and unusable name each fund with the reason, in plain words.
+USABILITY_COLUMNS = ["category", "datapoint", "funds_assessed", "funds_with_value", "completeness", "rating",
+                     "usable_funds", "why_usable", "caution_funds", "caution", "unusable_funds", "unusable",
+                     "no_value_funds"]
 DETAIL_COLUMNS = ["gp", "fund", "category", "datapoint", "rating", "reasons", "notes"]
 # Gap checks are covered by step 2 and reference checks by step 1; neither rates a value.
 SKIP_CHECKS = {"datapoint_not_reported", "value_missing", "fund_not_in_reference",
                "fund_missing_from_extract", "reference_incomplete_row", "reference_duplicate_fund"}
-# Long issue details are shortened in the reasons; the Issues sheet keeps the full text.
-MAX_REASON_CHARS = 160
+# Plain-language reason for each check that can limit a value (the Issues sheet has the full detail).
+CHECK_TEXT = {
+    "reporting_date": "wrong reporting date",
+    "blank_key": "fund, category or datapoint missing",
+    "unknown_datapoint": "datapoint not in the catalogue",
+    "missing_datapoint": "no fund reports it",
+    "fund_level_count": "reported more than once",
+    "series_date_missing": "dates missing",
+    "series_date_not_future": "dates not after the reporting date",
+    "series_gap": "incomplete forward calendar",
+    "missing_dimension": "breakdown label missing",
+    "exposure_members_mismatch": "labels and percentages cover different members",
+    "occupancy_unknown_sector": "occupancy for a sector with no GAV share",
+    "value_field": "value in the wrong field",
+    "non_numeric_value": "text where a number is expected",
+    "duplicate_key": "duplicate records",
+    "invalid_currency": "currency not allowed",
+    "mixed_currency": "more than one currency in the fund",
+    "fraction_out_of_range": "outside 0% to 100%",
+    "negative_amount": "negative amount",
+    "irr_implausible": "IRR outside the plausible range",
+    "label_key_mismatch": "label does not match its key",
+    "label_not_allowed": "label not in the allowed list",
+    "sum_to_one": "shares do not add up to 100%",
+    "sector_rollup": "level-1 sector share differs from its level-2 sectors",
+    "region_label_mismatch": "region does not match the country's mapping",
+    "hierarchy_conflict": "mapping conflicts across funds",
+    "occupancy_weighted": "differs from the GAV-weighted sector occupancy",
+    "gav_not_positive": "GAV zero or negative",
+    "nav_exceeds_gav": "NAV above GAV",
+    "ltv_above_cap": "LTV above its cap",
+    "ltv_vs_nav_gap": "LTV inconsistent with NAV and GAV",
+    "lifecycle_split": "completed and under development do not add up to 100%",
+    "debt_maturity_vs_ltv": "debt schedule does not match LTV × GAV",
+    "fees_high": "fees unusually high against GAV",
+    "bad_debts_high": "bad debts unusually high against GAV",
+    "zero_interest": "AIA interest zero or negative",
+    "date_order": "fund-life dates out of order",
+    "check_crashed": "a check could not run",
+}
+# What a Good value of each datapoint was checked for, beyond the rules derived from the YAML lists
+# (fractions, amounts, dates in order, IRR bounds).
+VALIDATIONS = {
+    "Fund GAV": ["positive"],
+    "Fund NAV": ["not above GAV"],
+    "Fund LTV (current)": ["within its LTV cap", "consistent with NAV and GAV"],
+    "Fund LTV Cap": ["current LTV within it"],
+    "Completed assets": ["adds up to 100% with assets under development"],
+    "Assets under development": ["adds up to 100% with completed assets"],
+    "Base fee incurred to-date": ["fees reasonable against GAV"],
+    "Carried interest incurred to-date": ["fees reasonable against GAV"],
+    "Bad debts": ["reasonable against GAV"],
+    "AIA Effective Interest in Fund": ["above zero"],
+    "Portfolio average occupancy rate": ["matches the GAV-weighted occupancy of its sectors"],
+    "Cash & Near Cash": ["the three GAV components add up to 100%"],
+    "Others": ["the three GAV components add up to 100%"],
+    "Real Estate Investments (Immovable Property)": ["the three GAV components add up to 100%"],
+    "Country": ["labels match their keys", "same members as the country shares"],
+    "Country Percentage": ["country shares add up to 100%"],
+    "Region Level 1": ["matches each country's sub-region, consistently across funds"],
+    "Region Level 2": ["continents from the allowed list, matching each country"],
+    "Sector - level 1": ["labels from the allowed list", "same members as the level-1 shares"],
+    "Sector - level 2": ["labels match their keys", "same members as the level-2 shares"],
+    "Portfolio sector percentage (by GAV) - total portfolio": ["sector shares add up to 100%",
+                                                               "level-1 parent consistent across funds"],
+    "Portfolio sector percentage (by GAV) - total portfolio Sector Level 1": [
+        "sector shares add up to 100%", "equals the sum of its level-2 sectors"],
+    "Average occupancy rate (%) - completed assets Sector Level 1": ["sectors from the allowed list"],
+    "Average occupancy rate (%) - completed assets Sector Level 2": ["only for sectors with a GAV share"],
+    "Debt maturity value": ["complete yearly schedule", "total matches LTV × GAV"],
+    "Capital call amount": ["complete forward calendar (monthly or quarterly)"],
+    "Distribution amount": ["complete forward calendar (monthly or quarterly)"],
+}
 
 
 def _dp_categories(rules: Rules) -> dict[str, str]:
@@ -63,9 +138,35 @@ def _dp_categories(rules: Rules) -> dict[str, str]:
     return {dp: cat for cat, dps in rules["datapoints"].items() for dp in dps}
 
 
-def _clip(text: str) -> str:
-    """Shorten a reason to MAX_REASON_CHARS, ending with an ellipsis when cut."""
-    return text if len(text) <= MAX_REASON_CHARS else text[: MAX_REASON_CHARS - 1].rstrip() + "…"
+def _named(rows: pd.DataFrame, across: list[str]) -> str:
+    """Return "Fund A: reason; Fund B: reason; All funds: reason" for detail rows and cross-fund reasons."""
+    parts = [f"{f}: {why}" for f, why in zip(rows["fund"], rows["reasons"], strict=True)]
+    parts += [f"All funds: {t}" for t in dict.fromkeys(across)]
+    return "; ".join(parts)
+
+
+def plain(check: str) -> str:
+    """Plain-language reason for a check, e.g. "ltv_above_cap" -> "LTV above its cap"."""
+    return CHECK_TEXT.get(check, check.replace("_", " "))
+
+
+def why_usable(dp: str, category: str, rules: Rules) -> str:
+    """Describe, in plain words, what a Good value of the datapoint was checked for."""
+    out = ["reported once per fund"] if category in ("Fund Info", "GAV Composition") else []
+    if dp in rules["fraction_datapoints"]:
+        out.append("between 0% and 100%")
+    if dp in rules["amount_datapoints"]:
+        out.append("not negative")
+    if dp in {d for pair in rules["date_order"] for d in pair}:
+        out.append("fund-life dates in order")
+    if dp in ("Fund Since Inception Net IRR", "Fund Target Net IRR"):
+        lo, hi = rules["irr_bounds"]
+        out.append(f"between {lo:.0%} and {hi:.0%}")
+    out += VALIDATIONS.get(dp, [])
+    if "positive" in out:
+        out = [x for x in out if x != "not negative"]  # implied
+    text = "; ".join(dict.fromkeys(out))
+    return text[:1].upper() + text[1:]  # keep acronyms such as GAV and LTV
 
 
 # ---------------------------------------------------------------- step 1
@@ -166,7 +267,8 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
     for r in issues[issues["fund"].isna() & issues["datapoint"].isin(list(dp_cat))].to_dict("records"):
         sev = str(r["severity"])
         if sev in ("error", "warning") and r["check"] not in SKIP_CHECKS:
-            dp_level[str(r["datapoint"])].append((UNUSABLE if sev == "error" else CAUTION, str(r["check"])))
+            level = UNUSABLE if sev == "error" else CAUTION
+            dp_level[str(r["datapoint"])].append((level, plain(str(r["check"]))))
     reasons: dict[tuple[str, str], list[str]] = defaultdict(list)
     notes: dict[tuple[str, str], list[str]] = defaultdict(list)
 
@@ -181,18 +283,18 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
         sev, check, dp, fund = str(r["severity"]), str(r["check"]), r["datapoint"], str(r["fund"])
         if check in SKIP_CHECKS:
             continue
-        text = _clip(f"{check}: {r['detail']}")
+        text = plain(check)
         if pd.isna(dp):
             if sev == "error":
                 for each_dp in dp_cat:
-                    rate(fund, each_dp, UNUSABLE, f"fund-wide {text}")
+                    rate(fund, each_dp, UNUSABLE, text)
         elif dp in dp_cat:
             if sev == "error":
                 rate(fund, dp, UNUSABLE, text)
             elif sev == "warning":
                 rate(fund, dp, CAUTION, text)
             else:
-                notes[(fund, dp)].append(text)
+                notes[(fund, dp)].append(f"{text}: {r['detail']}" if check == "iqr_outlier" else text)
 
     # Caveats kept as notes only: they do not change the rating.
     for (fund, dp), state in states.items():
@@ -233,21 +335,27 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
             })
     det = pd.DataFrame(detail, columns=DETAIL_COLUMNS)
 
-    # Per datapoint: worst rating, with the funds behind it.
+    # Per datapoint: completeness across the assessed funds, worst rating, and the funds behind it.
     rows = []
     for dp, cat in dp_cat.items():
         d = det[det["datapoint"] == dp]
-        unusable = list(d.loc[d["rating"] == UNUSABLE, "fund"])
-        caution = list(d.loc[d["rating"] == CAUTION, "fund"])
         empty = list(d.loc[d["rating"] == "No value", "fund"])
-        levels = [lvl for lvl, _ in dp_level[dp]]
-        worst = (UNUSABLE if unusable or UNUSABLE in levels
-                 else CAUTION if caution or CAUTION in levels else GOOD)
-        # Distinct causes, by check name, so the row stays short.
-        raw_causes = d.loc[d["rating"].isin([UNUSABLE, CAUTION]), "reasons"].str.split("; ").explode()
-        causes = [*raw_causes.dropna().str.split(":").str[0].str.removeprefix("fund-wide "),
-                  *(f"{c} (across funds)" for _, c in dp_level[dp])]
-        rows.append({"category": cat, "datapoint": dp, "rating": worst, "unusable_funds": ", ".join(unusable),
-                     "caution_funds": ", ".join(caution), "no_value_funds": ", ".join(empty),
-                     "reasons": ", ".join(dict.fromkeys(causes))})
+        with_value = len(d) - len(empty)
+        by = {lvl: d[d["rating"] == lvl] for lvl in (GOOD, CAUTION, UNUSABLE)}
+        # Cross-fund problems apply to every fund's value, so they are listed against all funds.
+        across = {lvl: [t for lv, t in dp_level[dp] if lv == lvl] for lvl in (CAUTION, UNUSABLE)}
+        worst = (UNUSABLE if len(by[UNUSABLE]) or across[UNUSABLE]
+                 else CAUTION if len(by[CAUTION]) or across[CAUTION] else GOOD)
+
+
+        usable = [] if worst != GOOD and across[UNUSABLE] + across[CAUTION] else list(by[GOOD]["fund"])
+        rows.append({
+            "category": cat, "datapoint": dp, "funds_assessed": len(d), "funds_with_value": with_value,
+            "completeness": with_value / len(d) if len(d) else 0.0, "rating": worst,
+            "usable_funds": ", ".join(usable), "why_usable": why_usable(dp, cat, rules) if usable else "",
+            "caution_funds": ", ".join(by[CAUTION]["fund"]), "caution": _named(by[CAUTION], across[CAUTION]),
+            "unusable_funds": ", ".join(by[UNUSABLE]["fund"]),
+            "unusable": _named(by[UNUSABLE], across[UNUSABLE]),
+            "no_value_funds": ", ".join(empty),
+        })
     return pd.DataFrame(rows, columns=USABILITY_COLUMNS), det

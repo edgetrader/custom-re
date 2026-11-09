@@ -90,7 +90,8 @@ def test_error_makes_datapoint_unusable_and_names_fund(raw, rules):
     _, usab, _ = _run(raw, rules)
     row = usab.set_index("datapoint").loc["Fund LTV (current)"]
     assert row["rating"] == UNUSABLE and row["unusable_funds"] == "Fund B"
-    assert "fraction_out_of_range" in row["reasons"]
+    assert row["unusable"].startswith("Fund B: outside 0% to 100%")
+    assert row["usable_funds"] == "Fund A" and "between 0% and 100%" in row["why_usable"]
 
 
 def test_warning_makes_datapoint_caution(raw, rules):
@@ -104,6 +105,8 @@ def test_missing_value_names_fund_without_changing_rating(raw, rules):
     _, usab, detail = _run(_drop(raw, "Fund B", ["Fund Target Net IRR"]), rules)
     row = usab.set_index("datapoint").loc["Fund Target Net IRR"]
     assert row["rating"] == GOOD and row["no_value_funds"] == "Fund B"
+    assert (row["funds_with_value"], row["funds_assessed"], row["completeness"]) == (1, 2, 0.5)
+    assert row["usable_funds"] == "Fund A"
 
 
 def test_fund_wide_error_makes_every_datapoint_unusable_for_that_fund(raw, rules):
