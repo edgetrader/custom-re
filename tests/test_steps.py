@@ -89,31 +89,31 @@ def test_error_makes_datapoint_unusable_and_names_fund(raw, rules):
     raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund LTV (current)"), "Value Num"] = 2.0
     _, usab, _ = _run(raw, rules)
     row = usab.set_index("datapoint").loc["Fund LTV (current)"]
-    assert row["rating"] == UNUSABLE and row["unusable_funds"] == "Fund B"
-    assert row["unusable"].startswith("Fund B: outside 0% to 100%")
-    assert row["usable_funds"] == "Fund A" and "between 0% and 100%" in row["why_usable"]
+    assert row["rating"] == UNUSABLE and row["unusable_funds"] == ["Fund B"]
+    assert row["unusable"][0] == ("outside 0% to 100%", ["Fund B"])
+    assert row["usable_funds"] == ["Fund A"] and "between 0% and 100%" in row["why_usable"]
 
 
 def test_warning_makes_datapoint_caution(raw, rules):
     raw.loc[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Bad debts"), "Value Num"] = 5e6
     _, usab, _ = _run(raw, rules)
     row = usab.set_index("datapoint").loc["Bad debts"]
-    assert row["rating"] == CAUTION and row["caution_funds"] == "Fund A"
+    assert row["rating"] == CAUTION and row["caution_funds"] == ["Fund A"]
 
 
 def test_missing_value_names_fund_without_changing_rating(raw, rules):
     _, usab, detail = _run(_drop(raw, "Fund B", ["Fund Target Net IRR"]), rules)
     row = usab.set_index("datapoint").loc["Fund Target Net IRR"]
-    assert row["rating"] == GOOD and row["no_value_funds"] == "Fund B"
+    assert row["rating"] == GOOD and row["no_value_funds"] == ["Fund B"]
     assert (row["funds_with_value"], row["funds_assessed"], row["completeness"]) == (1, 2, 0.5)
-    assert row["usable_funds"] == "Fund A"
+    assert row["usable_funds"] == ["Fund A"]
 
 
 def test_fund_wide_error_makes_every_datapoint_unusable_for_that_fund(raw, rules):
     raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund GAV"), "Currency"] = "EUR"
     _, usab, _ = _run(raw, rules)
     assert (usab["rating"] == UNUSABLE).all()
-    assert usab.set_index("datapoint").loc["Fund NAV", "unusable_funds"] == "Fund B"
+    assert usab.set_index("datapoint").loc["Fund NAV", "unusable_funds"] == ["Fund B"]
 
 
 def test_only_top_band_funds_are_assessed(raw, rules):
@@ -136,3 +136,23 @@ def test_fund_listed_with_blank_gp_is_in_reference(raw):
     ref = reference_check(tidy(raw), _ref([("GP One", "Fund A"), (None, "Fund B")]))
     b = ref.set_index("fund").loc["Fund B"]
     assert b["status"] == IN_REFERENCE and b["gp"] == "(GP blank in reference)"
+
+
+def test_fund_names_with_commas_are_counted_once(raw, rules):
+    # Real fund names can contain commas (e.g. "Fund II, L.P."); counts must not split them.
+    raw["Company"] = raw["Company"].map({"Fund A": "Fund A, L.P.", "Fund B": "Fund B, SCSp"})
+    raw.loc[(raw["Company"] == "Fund B, SCSp") & (raw["Datapoint.Name"] == "Bad debts"), "Value Num"] = 5e6
+    _, usab, _ = _run(raw, rules)
+    for r in usab.to_dict("records"):
+        assert r["n_usable"] == len(r["usable_funds"]) <= r["funds_with_value"] <= r["funds_assessed"] == 2
+    bad = usab.set_index("datapoint").loc["Bad debts"]
+    assert bad["usable_funds"] == ["Fund A, L.P."] and bad["caution"] == [
+        ("bad debts unusually high against GAV", ["Fund B, SCSp"])]
+
+
+def test_every_assessed_fund_is_counted_once_per_datapoint(raw, rules):
+    raw.loc[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund LTV (current)"), "Value Num"] = 2.0
+    _, usab, _ = _run(_drop(raw, "Fund B", ["Fund Target Net IRR"]), rules)
+    for r in usab.to_dict("records"):
+        parts = r["usable_funds"] + r["caution_funds"] + r["unusable_funds"] + r["no_value_funds"]
+        assert sorted(parts) == ["Fund A", "Fund B"], r["datapoint"]

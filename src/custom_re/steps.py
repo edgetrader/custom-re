@@ -49,11 +49,14 @@ GOOD, CAUTION, UNUSABLE = "Good", "Use with caution", "Unusable"
 RATINGS = [GOOD, CAUTION, UNUSABLE]
 _WORST = {GOOD: 0, CAUTION: 1, UNUSABLE: 2}
 # Per datapoint. funds_with_value / funds_assessed is the completeness across the assessed funds;
-# usable_funds are those rated Good with a value; why_usable says what their values were checked for;
-# caution and unusable name each fund with the reason, in plain words.
+# usable_funds (a list, counted by n_usable) are the funds rated Good with a value, and why_usable says
+# what their values were checked for. caution and unusable are lists of (reason, [funds]) pairs, reason
+# first in plain words; *_funds are the funds with that rating. Fund lists are real lists, never joined
+# strings, so names containing commas are counted correctly.
 USABILITY_COLUMNS = ["category", "datapoint", "funds_assessed", "funds_with_value", "completeness", "rating",
-                     "usable_funds", "why_usable", "caution_funds", "caution", "unusable_funds", "unusable",
-                     "no_value_funds"]
+                     "n_usable", "usable_funds", "why_usable", "caution_funds", "caution", "unusable_funds",
+                     "unusable", "no_value_funds"]
+ALL_FUNDS = "All assessed funds"  # stands in for the fund list of a problem that applies across funds
 DETAIL_COLUMNS = ["gp", "fund", "category", "datapoint", "rating", "reasons", "notes"]
 # Gap checks are covered by step 2 and reference checks by step 1; neither rates a value.
 SKIP_CHECKS = {"datapoint_not_reported", "value_missing", "fund_not_in_reference",
@@ -138,11 +141,17 @@ def _dp_categories(rules: Rules) -> dict[str, str]:
     return {dp: cat for cat, dps in rules["datapoints"].items() for dp in dps}
 
 
-def _named(rows: pd.DataFrame, across: list[str]) -> str:
-    """Return "Fund A: reason; Fund B: reason; All funds: reason" for detail rows and cross-fund reasons."""
-    parts = [f"{f}: {why}" for f, why in zip(rows["fund"], rows["reasons"], strict=True)]
-    parts += [f"All funds: {t}" for t in dict.fromkeys(across)]
-    return "; ".join(parts)
+def _by_reason(funds: list[str], reasons: dict[tuple[str, str], list[tuple[str, str]]], dp: str, level: str,
+               across: list[str]) -> list[tuple[str, list[str]]]:
+    """Group the given funds' reasons of one level: [(reason, [funds])], reasons in first-seen order."""
+    grouped: dict[str, list[str]] = {}
+    for fund in funds:
+        for lvl, text in reasons.get((fund, dp), []):
+            if lvl == level and fund not in grouped.setdefault(text, []):
+                grouped[text].append(fund)
+    for text in across:
+        grouped.setdefault(text, []).append(ALL_FUNDS)
+    return list(grouped.items())
 
 
 def plain(check: str) -> str:
@@ -269,14 +278,15 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
         if sev in ("error", "warning") and r["check"] not in SKIP_CHECKS:
             level = UNUSABLE if sev == "error" else CAUTION
             dp_level[str(r["datapoint"])].append((level, plain(str(r["check"]))))
-    reasons: dict[tuple[str, str], list[str]] = defaultdict(list)
+    reasons: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     notes: dict[tuple[str, str], list[str]] = defaultdict(list)
 
     def rate(fund: str, dp: str, level: str, text: str) -> None:
         key = (fund, dp)
         if _WORST[level] > _WORST[rating[key]]:
             rating[key] = level
-        reasons[key].append(text)
+        if (level, text) not in reasons[key]:
+            reasons[key].append((level, text))
 
     # Check results: errors make a value unusable, warnings call for caution, info is a note.
     for r in issues[issues["fund"].isin(funds)].to_dict("records"):
@@ -330,7 +340,7 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
             detail.append({
                 "gp": gp_of[fund], "fund": fund, "category": cat, "datapoint": dp,
                 "rating": "No value" if no_value and rating[key] == GOOD else rating[key],
-                "reasons": "; ".join(dict.fromkeys(reasons[key])),
+                "reasons": "; ".join(t for _, t in reasons[key]),
                 "notes": "; ".join(dict.fromkeys(notes[key])),
             })
     det = pd.DataFrame(detail, columns=DETAIL_COLUMNS)
@@ -339,7 +349,7 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
     rows = []
     for dp, cat in dp_cat.items():
         d = det[det["datapoint"] == dp]
-        empty = list(d.loc[d["rating"] == "No value", "fund"])
+        empty = sorted(d.loc[d["rating"] == "No value", "fund"])
         with_value = len(d) - len(empty)
         by = {lvl: d[d["rating"] == lvl] for lvl in (GOOD, CAUTION, UNUSABLE)}
         # Cross-fund problems apply to every fund's value, so they are listed against all funds.
@@ -348,14 +358,18 @@ def usability(df: pd.DataFrame, rules: Rules, issues: pd.DataFrame,
                  else CAUTION if len(by[CAUTION]) or across[CAUTION] else GOOD)
 
 
-        usable = [] if worst != GOOD and across[UNUSABLE] + across[CAUTION] else list(by[GOOD]["fund"])
+        # A problem across funds affects every fund's value, so no fund is then usable as is.
+        usable = [] if across[UNUSABLE] + across[CAUTION] else sorted(by[GOOD]["fund"])
+        caution_funds, unusable_funds = sorted(by[CAUTION]["fund"]), sorted(by[UNUSABLE]["fund"])
         rows.append({
             "category": cat, "datapoint": dp, "funds_assessed": len(d), "funds_with_value": with_value,
             "completeness": with_value / len(d) if len(d) else 0.0, "rating": worst,
-            "usable_funds": ", ".join(usable), "why_usable": why_usable(dp, cat, rules) if usable else "",
-            "caution_funds": ", ".join(by[CAUTION]["fund"]), "caution": _named(by[CAUTION], across[CAUTION]),
-            "unusable_funds": ", ".join(by[UNUSABLE]["fund"]),
-            "unusable": _named(by[UNUSABLE], across[UNUSABLE]),
-            "no_value_funds": ", ".join(empty),
+            "n_usable": len(usable), "usable_funds": usable,
+            "why_usable": why_usable(dp, cat, rules) if usable else "",
+            "caution_funds": caution_funds,
+            "caution": _by_reason(caution_funds, reasons, dp, CAUTION, across[CAUTION]),
+            "unusable_funds": unusable_funds,
+            "unusable": _by_reason(unusable_funds, reasons, dp, UNUSABLE, across[UNUSABLE]),
+            "no_value_funds": empty,
         })
     return pd.DataFrame(rows, columns=USABILITY_COLUMNS), det

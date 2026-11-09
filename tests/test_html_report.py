@@ -22,8 +22,9 @@ def test_page_has_summary_three_steps_and_actions(raw, rules):
     ids = ['id="summary"', 'id="step1"', 'id="step2"', 'id="step3"', 'id="actions"']
     assert all(i in page for i in ids) and [page.index(i) for i in ids] == sorted(page.index(i) for i in ids)
     assert "All 2 funds in the extract are in the reference list" in page
-    assert "<summary>All 2 funds</summary>Fund A, Fund B" in page and "None: no fund" in page
-    assert "<b>Usable because:</b> Reported once per fund; positive." in page  # Fund GAV, plain words
+    assert ('<summary>All 2 funds</summary><div class="funds"><span class="fund">Fund A</span>'
+            '<span class="fund">Fund B</span></div>') in page and "None: no fund" in page
+    assert "<b>Usable:</b> Reported once per fund; positive." in page  # Fund GAV, plain words
     assert not any(x in page for x in ('src="http', 'href="http', "url(http", "@import"))
 
 
@@ -35,9 +36,11 @@ def test_page_names_problem_funds(raw, rules):
     assert "In the extract but not in the reference (1)" in step1 and "Fund B" in step1
     assert "In the reference but missing from the extract (1)" in step1 and "Fund C" in step1
     step3 = page[page.index('id="step3"'):page.index('id="actions"')]
-    assert "<b>Unusable:</b> Fund A: outside 0% to 100%" in step3 and "fraction_out_of_range" not in step3
-    assert "<summary>1 of 2 funds</summary>Fund B" in step3
-    assert "Usable for the other funds because" in step3
+    # Reason first, then the funds it applies to; no check names.
+    assert ('<li><b>outside 0% to 100%</b> <span class="muted">(1 fund)</span><div class="funds">'
+            '<span class="fund">Fund A</span></div></li>') in step3
+    assert "fraction_out_of_range" not in step3
+    assert "<summary>1 of 2 funds</summary>" in step3 and "Usable for the other funds" in step3
 
 
 def test_escapes_text(raw, rules, tmp_path):

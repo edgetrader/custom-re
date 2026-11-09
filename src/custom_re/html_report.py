@@ -54,7 +54,9 @@ border-radius:999px;color:var(--c);background:var(--c-bg)}
 .bad{--c:var(--bad);--c-bg:var(--bad-bg)}
 .muted{color:var(--muted)}.bad-text{color:var(--bad)}.care-text{color:var(--care)}
 details summary{cursor:pointer;white-space:nowrap}details[open] summary{margin-bottom:4px}
-.detail p{margin:0}.detail p+p{margin-top:4px}
+.detail>div+div{margin-top:6px}ul.why{margin:2px 0 0;padding-left:18px}ul.why li{margin:2px 0}
+td.usable{width:34%}td.detail{min-width:340px}
+.funds{display:flex;flex-wrap:wrap;gap:2px 14px;font-size:13px;color:var(--ink)}
 ol.actions{margin:8px 0 0;padding-left:22px;max-width:120ch}ol.actions li{margin:6px 0}
 footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 @media print{body{background:#fff}section{break-inside:avoid}}
@@ -120,13 +122,24 @@ def _step2(d: ReportData) -> str:
             f'<div class="bands">{tiles}</div>{tables}</section>')
 
 
-def _fund_names(names: str, n_all: int) -> str:
+def _fund_list(funds: list[str]) -> str:
+    """Fund names, one per line so names that contain commas stay readable."""
+    return "".join(f'<span class="fund">{_e(f)}</span>' for f in funds)
+
+
+def _usable_for(funds: list[str], n_all: int) -> str:
     """'All N funds' or 'K of N funds', with the names folded into a details element."""
-    funds = [f for f in names.split(", ") if f]
     if not funds:
         return '<span class="muted">None</span>'
     head = f"All {n_all} funds" if len(funds) == n_all else f"{len(funds)} of {n_all} funds"
-    return f"<details><summary>{head}</summary>{_e(', '.join(funds))}</details>"
+    return f'<details><summary>{head}</summary><div class="funds">{_fund_list(funds)}</div></details>'
+
+
+def _reasons(label: str, css: str, groups: list[tuple[str, list[str]]]) -> str:
+    """Render a labelled block: each reason first, then the funds it applies to."""
+    items = "".join(f'<li><b>{_e(why)}</b> <span class="muted">({plural(len(funds), "fund")})</span>'
+                    f'<div class="funds">{_fund_list(funds)}</div></li>' for why, funds in groups)
+    return f'<div class="{css}"><b>{label}</b><ul class="why">{items}</ul></div>'
 
 
 def _step3(d: ReportData) -> str:
@@ -148,23 +161,23 @@ def _step3(d: ReportData) -> str:
             cat = r["category"]
             rows.append(f'<tr class="cat"><td colspan="5">{_e(cat)}</td></tr>')
         parts = []
-        if r["why_usable"]:
-            others = r["unusable_funds"] or r["caution_funds"]
-            label = "Usable for the other funds because" if others else "Usable because"
-            parts.append(f"<p><b>{label}:</b> {_e(r['why_usable'])}.</p>")
         if r["unusable"]:
-            parts.append(f'<p class="bad-text"><b>Unusable:</b> {_e(r["unusable"])}.</p>')
+            parts.append(_reasons("Unusable", "bad-text", r["unusable"]))
         if r["caution"]:
-            parts.append(f'<p class="care-text"><b>Use with caution:</b> {_e(r["caution"])}.</p>')
+            parts.append(_reasons("Use with caution", "care-text", r["caution"]))
         if r["no_value_funds"]:
-            parts.append(f'<p class="muted">No value: {_e(r["no_value_funds"])}.</p>')
+            parts.append(_reasons("Not assessed", "muted", [("No value", r["no_value_funds"])]))
+        if r["why_usable"]:
+            label = "Usable" if not parts else "Usable for the other funds"
+            parts.append(f'<div><b>{label}:</b> {_e(r["why_usable"])}.</div>')
         total, valued = int(r["funds_assessed"]), int(r["funds_with_value"])
         rows.append(
             f'<tr><td>{_e(r["datapoint"])}</td>'
             f'<td class="n">{valued} / {total} '
             f'<span class="muted">({r["completeness"] * 100:.0f}%)</span></td>'
             f'<td><span class="pill {R_CLASS[r["rating"]]}">{_e(r["rating"])}</span></td>'
-            f'<td>{_fund_names(r["usable_funds"], total)}</td><td class="detail">{"".join(parts)}</td></tr>')
+            f'<td class="usable">{_usable_for(r["usable_funds"], total)}</td>'
+            f'<td class="detail">{"".join(parts)}</td></tr>')
     table = _table(["Datapoint", "Funds with value", "Rating", "Usable for", "Why"], rows)
     return head + f"<p>{counts}</p>" + table + "</section>"
 

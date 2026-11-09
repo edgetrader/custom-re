@@ -100,6 +100,16 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if html_ok else 3
 
 
+def _flat(usab: pd.DataFrame) -> pd.DataFrame:
+    """Usability table with its list columns as text for Excel ("; " between funds, " | " between reasons)."""
+    out = usab.copy()
+    for col in ("usable_funds", "caution_funds", "unusable_funds", "no_value_funds"):
+        out[col] = out[col].map("; ".join)
+    for col in ("caution", "unusable"):
+        out[col] = out[col].map(lambda groups: " | ".join(f"{why}: {'; '.join(f)}" for why, f in groups))
+    return out
+
+
 def workbook_sheets(
     report: ReportData, issues: pd.DataFrame, checks: pd.DataFrame
 ) -> dict[str, pd.DataFrame]:
@@ -114,7 +124,7 @@ def workbook_sheets(
         "Summary": summary,
         "1 Reference Check": report.reference,
         "2 Completeness": report.completeness,
-        "3 Datapoint Usability": report.usability,
+        "3 Datapoint Usability": _flat(report.usability),
         "3 Fund Detail": report.detail,
         "Actions": pd.DataFrame({"action": report.actions}),
         "Issues": issues,

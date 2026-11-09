@@ -39,6 +39,11 @@ class ReportData:
     counts: dict[str, int]  # issues by severity
 
 
+def reasons_text(groups: list[tuple[str, list[str]]]) -> str:
+    """Return "reason: Fund A, Fund B | other reason: Fund C" for (reason, [funds]) pairs."""
+    return " | ".join(f"{why}: {', '.join(funds)}" for why, funds in groups)
+
+
 def plural(n: int, word: str, many: str | None = None) -> str:
     """Return "1 fund" / "2 funds"."""
     return f"{n} {word if n == 1 else (many or word + 's')}"
@@ -68,9 +73,9 @@ def _actions(ref: pd.DataFrame, comp: pd.DataFrame, usab: pd.DataFrame, issues: 
         out.append(f"Ask GPs to supply the missing datapoints of {plural(len(gaps), 'fund')} (listed in "
                    f"step 2).{extra}")
     for verb, col in [("Correct at source", "unusable"), ("Review", "caution")]:
-        rows = usab[usab[col] != ""]
+        rows = usab[usab[col].map(len) > 0]
         if len(rows):
-            items = "; ".join(f"{r['datapoint']} ({r[col]})" for r in rows.to_dict("records"))
+            items = "; ".join(f"{r['datapoint']} ({reasons_text(r[col])})" for r in rows.to_dict("records"))
             out.append(f"{verb}: {items}.")
     other = _unshown_errors(issues, comp, usab, top)
     if len(other):
