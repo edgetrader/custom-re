@@ -1,4 +1,4 @@
-"""Fund-level facts shared by the report content and the usability stage (dates, flags, derived checks)."""
+"""Fund-level facts used by step 3's notes: datapoint names, fund-life dates and derived-figure tests."""
 
 from __future__ import annotations
 
@@ -7,17 +7,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-# Datapoints whose meaning drives several findings and caveats.
-CALLS, DISTS, DEBT = "Capital call amount", "Distribution amount", "Debt maturity value"
-GAV, LTV, LTV_CAP = "Fund GAV", "Fund LTV (current)", "Fund LTV Cap"
-IRR, IRR_TARGET = "Fund Since Inception Net IRR", "Fund Target Net IRR"
+# Datapoints the notes refer to.
+CALLS, DEBT = "Capital call amount", "Debt maturity value"
+GAV, LTV = "Fund GAV", "Fund LTV (current)"
 END_TERM, END_IP = "End of fund term", "End of investment period"
 COUNTRY, REGION_L1, REGION_L2 = "Country", "Region Level 1", "Region Level 2"
-SECTOR_PCT_L2 = "Portfolio sector percentage (by GAV) - total portfolio"
-SECTOR_PCT_L1 = "Portfolio sector percentage (by GAV) - total portfolio Sector Level 1"
-OCC_L1 = "Average occupancy rate (%) - completed assets Sector Level 1"
-OCC_L2 = "Average occupancy rate (%) - completed assets Sector Level 2"
-COMPLETED = "Completed assets"
 
 
 def col(w: pd.DataFrame, name: str) -> pd.Series:

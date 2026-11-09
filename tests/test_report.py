@@ -1,7 +1,7 @@
 import openpyxl
 from app.run_dq import main
 
-from custom_re.checks import fund_metrics, run_all, summarise
+from custom_re.checks import run_all
 from custom_re.loader import tidy
 from custom_re.report import write_report
 from tests.conftest import ref_for
@@ -12,9 +12,9 @@ def test_write_report_keeps_formula_like_text_as_text(raw, rules, tmp_path):
     df = tidy(raw)
     issues = run_all(raw, df, rules, ref_for(raw))
     path = tmp_path / "r.xlsx"
-    write_report(path, summarise(issues), issues, fund_metrics(df))
+    write_report(path, {"Issues": issues, "Other": issues.head(1)})
     wb = openpyxl.load_workbook(path)
-    assert wb.sheetnames == ["Summary", "Issues", "Fund Metrics"]
+    assert wb.sheetnames == ["Issues", "Other"]
     types = {c.data_type for row in wb["Issues"].iter_rows() for c in row}
     assert "f" not in types
 
@@ -54,7 +54,7 @@ def test_main_html_failure_keeps_excel_and_exit_code(raw, tmp_path, monkeypatch,
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(run_dq, "build_report", boom)
+    monkeypatch.setattr(run_dq, "write_html", boom)
     assert main(["Q2 2026", "--settings", str(settings)]) == 3
     assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
     assert "HTML report failed" in capsys.readouterr().err
@@ -84,8 +84,8 @@ def test_main_reads_period_file_and_writes_period_folder(raw, tmp_path):
     assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
     assert (tmp_path / "out" / "2026Q2" / "dq_management_report.html").exists()
     sheets = openpyxl.load_workbook(tmp_path / "out" / "2026Q2" / "dq_report.xlsx").sheetnames
-    assert sheets[3:] == ["S1 GP Tiers", "S1 Fund Tiers", "S1 Datapoint Completeness", "S1 Datapoint Gaps",
-                          "S2 By Datapoint", "S2 Usability Grid", "S2 Usability"]
+    assert sheets == ["Summary", "1 Reference Check", "2 Completeness", "3 Datapoint Usability",
+                      "3 Fund Detail", "Actions", "Issues", "Checks"]
 
 
 def test_main_flags_extract_from_wrong_quarter(raw, tmp_path):

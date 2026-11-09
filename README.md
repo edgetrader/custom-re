@@ -24,10 +24,14 @@ The extract is looked up as `<data_dir>/<input_pattern>` (by default `data/Custo
 
 Two files are written to `output/<period code>/`, e.g. `output/2026Q2/`:
 
-The report has two stages. Stage 1 is completeness by GP and fund: each fund gets a tier from 1 to 4 (Complete, Substantially complete, Partial, Insufficient). Stage 2 is usability by fund and datapoint, for the funds in tiers 1-2 (the analysable funds).
+The report has three steps, all per fund (amounts in different currencies are never combined):
 
-- `dq_report.xlsx` has ten sheets: Summary (one row per check with PASS / INFO / FLAG), Issues (one row per finding with severity, GP, fund, datapoint and Excel row), Fund Metrics (with a GP column), S1 GP Tiers, S1 Fund Tiers, S1 Datapoint Completeness, S1 Datapoint Gaps (one row per fund and datapoint that is not reported, has no value, or is reported only as zero), S2 By Datapoint, S2 Usability Grid (fund by datapoint) and S2 Usability (one row per fund and datapoint, with reasons). The console also prints the Stage 1 tier counts and the Stage 2 rating counts.
-- `dq_management_report.html` is a self-contained management report generated from the data (no external requests, light and dark themes, full-width layout). Sections: a verdict (red "Not ready" if there are errors; amber if there are warnings or findings to confirm, shown as "N points to confirm with managers"; green otherwise), key figures (including how many funds are analysable and the share of their datapoint values that are usable), ranked findings (including a warning when funds are too incomplete for datapoint analysis), Stage 1 (tier bar and definitions, GP table with tier profile, funds below the analysis tier with reasons, all funds by GP), Stage 1 datapoint completeness (funds missing each datapoint), Stage 2 (rating bar, by-datapoint table, fund by datapoint heatmap with reasons on hover), the check-group summary, a collapsed cross-fund datapoint register (Ready / Use with care / Not usable / Empty; amounts carry a neutral "own currency; compare by ratios" note), next steps and scope. Findings appear only when they apply.
+1. Reference check: funds in the extract that are not in the GP reference, and reference funds missing from the extract. Unlisted funds still go through steps 2 and 3 (GP shown as "(not in reference)"). A fund listed with a blank GP counts as listed.
+2. Completeness: for each fund, how many of the 36 datapoints have a value, placed in a band (>90%, >75%, >50%, 50% or less) with the missing datapoints listed. A zero counts as a value, and so does a blank or missing Bad debts (no bad debt).
+3. Datapoint usability, for the funds in the first band (>90%): each of the 36 datapoints is rated Good, Use with caution or Unusable, taking the worst case across funds and naming the funds behind it.
+
+- `dq_report.xlsx` has eight sheets: Summary, 1 Reference Check, 2 Completeness, 3 Datapoint Usability, 3 Fund Detail (one row per fund and datapoint, with reasons and notes), Actions, Issues (one row per finding with severity, GP, fund, datapoint and Excel row) and Checks (one row per check with PASS / INFO / FLAG). The console prints the one-line summary.
+- `dq_management_report.html` is a self-contained management report generated from the data (no external requests, light and dark themes). It has a header (source, reporting date, error and warning counts), the one-line summary, Step 1, Step 2 (band counts, then one table per band, funds with gaps first), Step 3 (the 36 datapoints by category with rating and named funds) and Actions for managers.
 
 Exit codes: 0 clean, 1 if any error-severity issue is found, 2 for a bad period, bad settings, or a missing or unreadable input or reference file, 3 if the data is clean but the HTML report failed (the Excel report is still written).
 
@@ -46,13 +50,11 @@ The checks live in `src/custom_re/checks.py`; `CHECK_GROUPS` is the registry of 
 
 Multiple currencies across funds are expected; only a fund reporting more than one currency (`mixed_currency`) or an invalid currency code is an issue. Funds with different projection calendars are reported as an info note.
 
-`src/custom_re/completeness.py` classifies each fund and datapoint as Has a value, None, Not reported, No value, No value in some records (partly blank series) or Reported only as zero, and ranks funds by how many of the 36 catalogued datapoints have a value (present and, for numbers, non-zero), tie-broken by share of non-zero records, then fund name; tied funds share a rank. Against the GP reference it covers every fund in the extract or the reference and gives each a status (Reported / Missing from extract / Not in reference). A per-GP roll-up (counts only, no amounts) shows funds expected, reported and missing, funds with all 36 datapoints valued, mean datapoints with value and errors and warnings; unmapped funds come last in the GP roll-up. It also lists datapoints reported only as zero and gives per-datapoint coverage. A zero counts as reported but without value, which may be genuine; zero-only datapoints are raised as an info finding to confirm with managers.
+### Steps and ratings
 
-### Tiers and usability
+`src/custom_re/steps.py` holds the three steps (`reference_check`, `completeness`, `usability`). `src/custom_re/completeness.py` holds `datapoint_states`, which classifies each fund and datapoint as Has a value, None, Not reported, No value, No value in some records (partly blank series) or Reported only as zero. Only Not reported and No value count as gaps in step 2. The bands come from `completeness_bands` in `config/dq_rules.yaml`: a fund goes in the first band whose `above` its share strictly exceeds.
 
-`src/custom_re/stages.py` holds both stages. `add_tiers` assigns the tier from the `tiers` section of `config/dq_rules.yaml`. A datapoint counts as answered if it has a value, a zero, "none" (Bad debts) or is partly blank. Tier 1 needs every datapoint answered and no datapoint with an error; tier 2 needs at least 90% answered, at most one error datapoint and every category represented; tier 3 needs at least 70% answered; everything else, and every fund missing from the extract, is tier 4. Only catalogued datapoints count as error datapoints, and a fund-wide error (for example `mixed_currency`) keeps a fund out of tiers 1-2. When `core_datapoints` is set, a fund missing any of them cannot be tier 1 or 2 (the list is empty until agreed). Each fund has a `tier_reason` naming what keeps it from the tier above, and funds are ranked by tier. GPs are ranked by share of analysable funds, then number analysable, then coverage, mean datapoints with value and value share.
-
-`usability` rates each analysable fund and datapoint as Usable, Use with care or Not usable (Not assessed for lower tiers), with reasons. Not usable: not reported, no value, an error, or a fund-wide error. Use with care: warnings, outlier or occupancy caveats, partly blank, only zero, past term end, capital calls after the investment period, anonymised country labels, region level naming, or debt equal to LTV x GAV. `src/custom_re/facts.py` holds the datapoint constants and helpers shared with `insights.py`.
+In step 3 a check error on a datapoint makes it Unusable, a warning makes it Use with caution, and anything else is Good. A fund-wide error (for example `mixed_currency`) makes every value of that fund Unusable. An error or warning on a datapoint across funds rates the datapoint itself ("across funds"). Zeros, partly blank series, past term end, capital calls after the investment period, anonymised country labels, region level naming, debt equal to LTV x GAV, outliers and other info findings are notes only (sheet 3 Fund Detail). A missing value names the fund but does not change the rating, since step 2 counts it. Reference and gap checks do not rate values. `src/custom_re/facts.py` holds the datapoint constants and helpers used for the notes.
 
 Funds are not expected to populate every datapoint. A datapoint a fund does not report (`datapoint_not_reported`) or reports without a value (`value_missing`) is an info gap, not an error; the only exception is a missing Fund GAV, NAV or LTV, which raises a warning because the core rules cannot run (`rule_inputs_missing`). Text `NA`, `N/A`, `null`, `nan` or `none` (any case) in `Value Num` counts as no value; other text there is still a `non_numeric_value` error. Datapoints listed under `none_when_missing` in `config/dq_rules.yaml` (currently Bad debts) are different: not reported, blank, null/NA or zero all mean "none" (no bad debt), an answer rather than a gap.
 
@@ -62,7 +64,7 @@ A check that crashes is reported as `check_crashed` and does not stop the others
 
 `config/settings.yaml` holds `data_dir`, `output_dir`, `rules_file` (relative paths resolve against the project root, absolute paths are used as is) and `input_pattern` (default `Custom_RE_Extract_{period}.xlsx`, where `{period}` is the period code such as `2026Q2`) and `reference_file` (required; relative or full path to the GP reference workbook).
 
-`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, allowed vocabularies, `none_when_missing`, plausibility bounds and the forward-looking calendars. Its `report:` section (all keys required) tunes the HTML report: `ltv_headroom`, `exact_rel_tol`, `exact_share_tol`, `anonymised_label_pattern`, `reconcile_sample` and `empty_field_notes`. Its `tiers` section sets the Stage 1 tier rules (`labels`, `core_datapoints`, `tier1`, `tier2`, `tier3`, `analysis_max_tier`). It has no `reporting_date` or `expected_fund_count`: the CLI sets them to the quarter end of the period and to the number of funds in the GP reference.
+`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, allowed vocabularies, `none_when_missing`, plausibility bounds and the forward-looking calendars. Its `completeness_bands` list (`label`, `above`; the last has `above: null`) sets the step 2 bands. Its `report:` section (all keys required) holds `exact_rel_tol` and `anonymised_label_pattern`, used for the step 3 notes. It has no `reporting_date` or `expected_fund_count`: the CLI sets them to the quarter end of the period and to the number of funds in the GP reference.
 
 ## Rolling to a new quarter
 
@@ -90,11 +92,11 @@ src/custom_re/
   loader.py     read and tidy the extract, fund_info_wide
   checks.py     named checks, run_all, summarise, fund_metrics
   report.py     Excel report writer
-  completeness.py  fund_completeness, gp_completeness, datapoint_completeness
-  stages.py     add_tiers (Stage 1 tiers), usability (Stage 2 ratings)
-  facts.py      datapoint constants and helpers shared with insights
+  completeness.py  datapoint_states: per fund and datapoint value state
+  steps.py      reference_check, completeness (bands), usability (ratings)
+  facts.py      datapoint names and helpers for the step 3 notes
   reference.py  read_reference, gp_map, add_gp (GP reference workbook)
-  insights.py   build_report: verdict, findings and datapoint register (ReportData)
+  insights.py   build_report: summary, the three step tables and actions (ReportData)
   html_report.py  render_html, write_html: the HTML management report
   settings.py   Period parsing and settings loading
 app/run_dq.py   command-line entry point

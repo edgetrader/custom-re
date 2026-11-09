@@ -62,19 +62,14 @@ datapoints:
 none_when_missing:
   Bad debts: No bad debt
 
-# Stage 1: completeness tiers per fund (1 best, 4 worst). "Answered" means a datapoint has a value,
-# a zero, or "none" (see none_when_missing); a datapoint with an error counts as an error datapoint.
-# A fund takes the best tier whose every condition it meets; funds missing from the extract are tier 4.
-# Stage 2 (usability per fund and datapoint) covers tiers up to analysis_max_tier.
-tiers:
-  labels: {1: Complete, 2: Substantially complete, 3: Partial, 4: Insufficient}
-  # Datapoints a fund must answer to reach tier 1 or 2. Empty until a core list is agreed.
-  core_datapoints: []
-  tier1: {min_answered: 1.0, max_error_datapoints: 0}
-  # all_categories: every category has at least one answered datapoint.
-  tier2: {min_answered: 0.9, max_error_datapoints: 1, all_categories: true}
-  tier3: {min_answered: 0.7}
-  analysis_max_tier: 2
+# Step 2: completeness bands by the share of the datapoint list a fund has values for (a zero, or
+# "none" for none_when_missing, counts). A fund goes in the first band whose `above` it exceeds; the
+# last band (above: null) takes the rest. Step 3 assesses the funds in the first band.
+completeness_bands:
+  - {label: ">90%", above: 0.90}
+  - {label: ">75%", above: 0.75}
+  - {label: ">50%", above: 0.50}
+  - {label: "≤50%", above: null}
 
 # Forward-looking calendars, derived from reporting_date so they roll each quarter.
 # Each is `periods` period-ends of pandas `freq` (YE/QE/ME) strictly after the reporting
@@ -153,20 +148,7 @@ outlier_metrics:
   - fees_to_gav
   - bad_debt_to_gav
 
-# Management HTML report: thresholds and wording that are business knowledge, not code.
+# Settings for step 3's notes (see src/custom_re/steps.py).
 report:
-  ltv_headroom: 0.05              # LTV within this of its cap is called out
   exact_rel_tol: 1.0e-9           # amounts: "derived, not reported" test for exact agreement
-  exact_share_tol: 1.0e-4         # shares: agreement within 0.01 points, allowing for rounding
   anonymised_label_pattern: '^Country \d+$'
-  reconcile_sample: 3 to 5        # funds to reconcile against manager reports
-  # Source columns that are expected to be empty, with what their absence means.
-  empty_field_notes:
-    Scenario: Actual and forecast values cannot be told apart.
-    Version: Restatements cannot be told apart.
-    Period: Frequency has to be inferred from dates.
-    Reporting Period: The reporting date is populated and used instead.
-    Region: Geography comes from the exposure records instead.
-    Nature: ""
-    Analysis4: Analysis 1 to 3 carry all dimensions.
-    Value Memo: No commentary is supplied with any value.

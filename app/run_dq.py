@@ -13,22 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from custom_re.checks import fund_metrics, run_all, summarise  # noqa: E402
-from custom_re.completeness import (  # noqa: E402
-    MISSING,
-    UNLISTED,
-    datapoint_completeness,
-    datapoint_gaps,
-    fund_completeness,
-    gp_completeness,
-)
+import pandas as pd  # noqa: E402
+
+from custom_re.checks import run_all, summarise  # noqa: E402
 from custom_re.html_report import write_html  # noqa: E402
-from custom_re.insights import build_report  # noqa: E402
+from custom_re.insights import ReportData, build_report  # noqa: E402
 from custom_re.loader import load_rules, read_raw, tidy  # noqa: E402
 from custom_re.reference import add_gp, gp_map, read_reference  # noqa: E402
 from custom_re.report import write_report  # noqa: E402
 from custom_re.settings import load_settings, parse_period  # noqa: E402
-from custom_re.stages import NOT_ASSESSED, add_tiers, usability, usability_by_datapoint  # noqa: E402
 
 DEFAULT_SETTINGS = ROOT / "config" / "settings.yaml"
 REPORT_NAME = "dq_report.xlsx"
@@ -81,60 +74,52 @@ def main(argv: list[str] | None = None) -> int:
 
     # Checks run outside the try: run_all isolates their crashes as check_crashed issues.
     issues = run_all(raw, df, rules, reference)
-    summary = summarise(issues)
+    checks = summarise(issues)
     out_dir = settings.period_output_dir(period)
-    # Stage 1 tiers funds by completeness; stage 2 rates the datapoints of the analysable ones.
-    fc = add_tiers(fund_completeness(df, rules, reference), df, rules, issues)
-    gc, dc = gp_completeness(fc, issues), datapoint_completeness(df, rules)
-    u = usability(df, rules, issues, fc)
-    grid = u[u["rating"] != NOT_ASSESSED].pivot(index=["gp", "fund"], columns="datapoint", values="rating")
-    grid = grid.reindex(columns=list(dict.fromkeys(u["datapoint"]))).reset_index()
-    # GP first, then fund: the workbook's fund-level sheets carry the GP for filtering.
-    metrics = add_gp(fund_metrics(df, rules["none_when_missing"]).reset_index(), reference)
-    write_report(out_dir / REPORT_NAME, summary, add_gp(issues, reference),
-                 metrics.set_index(["gp", "fund"]),
-                 {"S1 GP Tiers": gc, "S1 Fund Tiers": fc, "S1 Datapoint Completeness": dc,
-                  "S1 Datapoint Gaps": datapoint_gaps(df, rules, reference),
-                  "S2 By Datapoint": usability_by_datapoint(u), "S2 Usability Grid": grid,
-                  "S2 Usability": u})
-    # The HTML report is presentation: a bug there must not hide the Excel results or look like a
+    report = build_report(df, issues, rules, reference, period.label, src.name)
+    write_report(out_dir / REPORT_NAME, workbook_sheets(report, add_gp(issues, reference), checks))
+    # The HTML page is presentation: a bug there must not hide the Excel results or look like a
     # data-quality failure, so it is isolated here at the app boundary.
     html_ok = True
     try:
-        report = build_report(raw, df, issues, summary, rules, reference, period.label, src.name)
         write_html(out_dir / HTML_NAME, report)
     except Exception as exc:  # noqa: BLE001
         html_ok = False
         traceback.print_exc()
         print(f"HTML report failed: {exc!r}", file=sys.stderr)
 
-    counts = issues["severity"].value_counts().reindex(["error", "warning", "info"], fill_value=0)
+    counts = report.counts
     print(f"Period: {period.label}  Input: {src}  GP reference: {ref_path}")
-    print(f"Rows: {len(df):,}  Funds: {df['fund'].nunique()}  Checks: {len(summary)}")
-    print(f"Issues -> errors: {counts['error']}  warnings: {counts['warning']}  info: {counts['info']}")
-    print(summary[summary["status"] != "PASS"].to_string(index=False))
-    # Completeness of what was submitted; funds missing from the extract are counted on the GP line.
-    sub = fc[fc["status"] != MISSING]
-    if len(sub):
-        total = int(sub["datapoints_total"].iloc[0])
-        full = int((sub["datapoints_with_value"] == total).sum())
-        print(f"Completeness: {full} of {len(sub)} funds have a "
-              f"non-zero value in all {total} datapoints; lowest {int(sub['datapoints_with_value'].min())}.")
-    if len(fc):
-        tiers = fc["tier"].value_counts().reindex([1, 2, 3, 4], fill_value=0)
-        rated = u[u["rating"] != NOT_ASSESSED]["rating"].value_counts()
-        print(f"Stage 1 tiers (1-4): {' / '.join(str(int(n)) for n in tiers)}  "
-              f"analysable: {int(fc['analysable'].sum())} of {len(fc)} funds")
-        print("Stage 2 ratings: " + ", ".join(f"{k} {int(v)}" for k, v in rated.items()))
-    if len(gc):
-        print(f"GPs: {len(gc)}  Funds expected: {int(gc['funds_expected'].sum())}  "
-              f"missing from extract: {int(gc['funds_missing'].sum())}  "
-              f"not in reference: {int((fc['status'] == UNLISTED).sum())}")
+    print(f"Rows: {len(df):,}  Issues -> errors: {counts['error']}  warnings: {counts['warning']}  "
+          f"info: {counts['info']}")
+    print(report.summary)
     written = [REPORT_NAME] + ([HTML_NAME] if html_ok else [])
     print(f"Reports written to {out_dir}: {', '.join(written)}")
     if counts["error"]:
         return 1
     return 0 if html_ok else 3
+
+
+def workbook_sheets(
+    report: ReportData, issues: pd.DataFrame, checks: pd.DataFrame
+) -> dict[str, pd.DataFrame]:
+    """Build the workbook's sheets in order: summary, the three steps, actions, then every check result."""
+    summary = pd.DataFrame(
+        [("Period", report.period_label), ("Source", report.source_name),
+         ("Reporting date", f"{report.reporting_date:%Y-%m-%d}"), ("Summary", report.summary),
+         *((f"Funds {b} complete", int((report.completeness["band"] == b).sum())) for b in report.bands),
+         *((f"Issues: {k}", v) for k, v in report.counts.items())],
+        columns=["item", "value"])
+    return {
+        "Summary": summary,
+        "1 Reference Check": report.reference,
+        "2 Completeness": report.completeness,
+        "3 Datapoint Usability": report.usability,
+        "3 Fund Detail": report.detail,
+        "Actions": pd.DataFrame({"action": report.actions}),
+        "Issues": issues,
+        "Checks": checks,
+    }
 
 
 if __name__ == "__main__":

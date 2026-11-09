@@ -1,87 +1,51 @@
-"""Tests for rendering the management report to HTML."""
+"""Tests for rendering the report to HTML."""
 
 import pandas as pd
 
-from custom_re.checks import run_all, summarise
+from custom_re.checks import run_all
 from custom_re.html_report import render_html, write_html
 from custom_re.insights import build_report
 from custom_re.loader import tidy
 from tests.conftest import ref_for
 
 
-def _report(raw, rules, source="x.xlsx"):
+def _page(raw, rules, ref=None, source="x.xlsx"):
     df = tidy(raw)
-    issues = run_all(raw, df, rules, ref_for(raw))
-    return build_report(raw, df, issues, summarise(issues), rules, ref_for(raw), "Q2 2026", source)
+    ref = ref_for(raw) if ref is None else ref
+    rep = build_report(df, run_all(raw, df, rules, ref), rules, ref, "Q2 2026", source)
+    return render_html(rep, pd.Timestamp("2026-07-15 09:30"))
 
 
-def test_render_contains_sections_and_findings(raw, rules):
-    rep = _report(raw, rules)
-    page = render_html(rep, pd.Timestamp("2026-07-15 09:30"))
-    assert page.startswith("<!doctype html>")
-    assert "<title>Custom RE Q2 2026 Data Quality</title>" in page
-    for anchor in ['id="findings"', 'id="stage1"', 'id="datapoint-completeness"', 'id="stage2"',
-                   'id="checks"', 'id="register"', 'id="next"']:
-        assert anchor in page
-    for f in rep.findings:
-        assert f.action.replace("'", "&#x27;") in page
-    assert "15 Jul 2026 09:30" in page
-    # Self-contained: no external fonts, scripts or styles.
+def test_page_has_summary_three_steps_and_actions(raw, rules):
+    page = _page(raw, rules)
+    assert page.startswith("<!doctype html>") and "<title>Custom RE Q2 2026 Data Quality</title>" in page
+    ids = ['id="summary"', 'id="step1"', 'id="step2"', 'id="step3"', 'id="actions"']
+    assert all(i in page for i in ids) and [page.index(i) for i in ids] == sorted(page.index(i) for i in ids)
+    assert "All 2 funds in the extract are in the reference list" in page
+    assert "Good for all 2 funds" in page and "None: no fund" in page
     assert not any(x in page for x in ('src="http', 'href="http', "url(http", "@import"))
 
 
-def test_render_escapes_text(raw, rules):
-    page = render_html(_report(raw, rules, source="<b>x</b>.xlsx"), pd.Timestamp("2026-07-15"))
-    assert "&lt;b&gt;x&lt;/b&gt;.xlsx" in page
-    assert "<b>x</b>.xlsx" not in page
+def test_page_names_problem_funds(raw, rules):
+    ref = pd.DataFrame({"excel_row": [2, 3], "gp": ["GP One", "GP One"], "fund": ["Fund A", "Fund C"]})
+    raw.loc[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund LTV (current)"), "Value Num"] = 2.0
+    page = _page(raw, rules, ref)
+    step1 = page[page.index('id="step1"'):page.index('id="step2"')]
+    assert "In the extract but not in the reference (1)" in step1 and "Fund B" in step1
+    assert "In the reference but missing from the extract (1)" in step1 and "Fund C" in step1
+    step3 = page[page.index('id="step3"'):page.index('id="actions"')]
+    assert "<b>Unusable for</b> Fund A" in step3
+
+
+def test_escapes_text(raw, rules, tmp_path):
+    raw.loc[raw["Company"] == "Fund A", "Company"] = "<b>Fund A</b>"
+    page = _page(raw, rules, source="<i>x</i>.xlsx")
+    assert "<b>Fund A</b>" not in page and "&lt;i&gt;x&lt;/i&gt;.xlsx" in page
 
 
 def test_write_html_creates_folder(raw, rules, tmp_path):
+    df = tidy(raw)
+    rep = build_report(df, run_all(raw, df, rules, ref_for(raw)), rules, ref_for(raw), "Q2 2026", "x.xlsx")
     path = tmp_path / "2026Q2" / "r.html"
-    write_html(path, _report(raw, rules))
+    write_html(path, rep)
     assert path.read_text(encoding="utf-8").startswith("<!doctype html>")
-
-
-def test_render_escapes_extract_text(raw, rules):
-    # Labels from the extract reach the page through issue details; they must never become markup.
-    raw.loc[raw["Datapoint.Name"] == "Region Level 2", "Value String"] = "<img src=x onerror=alert(1)>"
-    page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
-    assert "<img src=x" not in page
-
-
-def test_unassigned_errors_note(raw, rules):
-    rules["expected_fund_count"] = 3
-    page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
-    assert "apply to no single datapoint" in page
-
-
-def test_stage_sections_follow_the_data(raw, rules):
-    page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
-    assert "2 of 2 funds are complete enough to analyse" in page
-    assert "Every reported fund reaches tier 2 or better" in page
-    assert 'class="heat"' in page and "Fund A" in page[page.index('id="stage2"'):]
-    # Drop most of Fund B: it falls to tier 4, is named with its reason and left out of the grid.
-    keep = raw["Datapoint.Name"].isin(["Fund GAV", "Fund NAV", "Country", "Sector - level 1"])
-    raw = raw[(raw["Company"] == "Fund A") | keep].reset_index(drop=True)
-    page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
-    stage1 = page[page.index('id="stage1"'):page.index('id="datapoint-completeness"')]
-    assert "Funds below tier 2: left out of Stage 2" in stage1 and "datapoints unanswered" in stage1
-    heat = page[page.index('class="heat"'):]
-    assert "Fund A" in heat and "Fund B" not in heat
-
-
-def test_datapoint_section_names_funds_by_gap(raw, rules):
-    raw["Value Num"] = raw["Value Num"].astype(object)
-    raw.loc[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund NAV"), "Value Num"] = "NA"
-    none_dps = ["Fund Target Net IRR", "Bad debts"]
-    fund_b_none = (raw["Company"] == "Fund B") & raw["Datapoint.Name"].isin(none_dps)
-    raw = raw[~fund_b_none]
-    page = render_html(_report(raw.reset_index(drop=True), rules), pd.Timestamp("2026-07-15"))
-    section = page[page.index('id="datapoint-completeness"'):page.index('id="register"')]
-    assert "Funds missing each datapoint or its value" in section
-    nav = section[section.index("<td>Fund NAV"):]
-    assert "Fund A" in nav[:nav.index("</tr>")]
-    assert ("no bad debt for 1 fund (not reported, blank or zero), "
-            "treated as none rather than a gap: Fund B") in section
-    # Fund tables show the gaps per fund.
-    assert "<b>Missing:</b> Fund Target Net IRR" in page
