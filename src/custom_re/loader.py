@@ -27,6 +27,9 @@ RENAME = {
     "Value String": "value_str",
 }
 
+# Text in Value Num that means "no value" (compared case-insensitively), like a blank cell.
+NULL_TEXT = {"na", "n/a", "null", "nan", "none"}
+
 # Columns that identify one record.
 KEY = ["fund", "datapoint", "date", "a1", "a2", "a3"]
 
@@ -51,7 +54,8 @@ def tidy(raw: pd.DataFrame) -> pd.DataFrame:
     """Convert the raw KPI sheet to typed, tidy columns.
 
     Columns outside RENAME are dropped; `check_unused_columns` verifies they are empty.
-    Non-numeric text in Value Num is kept in `value_num_text` so it can be reported.
+    Null text (NULL_TEXT) in Value Num counts as no value. Other non-numeric text is kept in
+    `value_num_text` so it can be reported.
     """
     missing = [c for c in RENAME if c not in raw.columns]
     if missing:
@@ -70,6 +74,7 @@ def tidy(raw: pd.DataFrame) -> pd.DataFrame:
 
     # Coerce numbers, but remember any text that failed so the DQ report can show it.
     original = raw["Value Num"].astype("string").str.strip()
+    original = original.mask(original.str.casefold().isin(NULL_TEXT).fillna(False))
     df["value_num"] = pd.to_numeric(raw["Value Num"], errors="coerce")
     df["value_num_text"] = original.where(df["value_num"].isna() & original.notna() & (original != ""))
 

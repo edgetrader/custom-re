@@ -31,12 +31,12 @@ CHECK_GROUPS = {
     "fund_count": "structure",
     "unknown_datapoint": "structure",
     "missing_datapoint": "structure",
+    "datapoint_not_reported": "completeness",
+    "value_missing": "completeness",
     "fund_level_count": "completeness",
     "series_date_missing": "completeness",
     "series_gap": "completeness",
     "projection_frequency_mix": "completeness",
-    "no_geography": "completeness",
-    "no_sector": "completeness",
     "missing_dimension": "completeness",
     "exposure_members_mismatch": "completeness",
     "occupancy_unknown_sector": "completeness",
@@ -223,6 +223,8 @@ def check_datapoint_catalogue(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
         _issue("missing_datapoint", "error", f"Category {c!r} / datapoint {d!r} has no rows at all",
                datapoint=d)
         for c, d in sorted(expected - found)
+        # No rows anywhere for a "none when missing" datapoint just means no fund has any.
+        if d not in rules["none_when_missing"]
     ]
     return _frame(out)
 
@@ -230,8 +232,28 @@ def check_datapoint_catalogue(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
 # ---------------------------------------------------------------- completeness
 
 
+def check_datapoint_coverage(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
+    """List each catalogued datapoint a fund does not report at all (a gap, not an error).
+
+    Funds are not expected to report everything. Datapoints in `none_when_missing` (e.g. Bad debts)
+    mean "none" when absent, so they are not listed.
+    """
+    none = set(rules["none_when_missing"])
+    reported = set(map(tuple, df[["fund", "datapoint"]].dropna().drop_duplicates().to_numpy()))
+    return _frame(
+        _issue("datapoint_not_reported", "info", f"{category}: not reported for this fund", fund, dp)
+        for fund in sorted(df["fund"].dropna().unique())
+        for category, dps in rules["datapoints"].items()
+        for dp in dps
+        if dp not in none and (fund, dp) not in reported
+    )
+
+
 def check_fund_level_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Each fund has exactly one row for every Fund Info and GAV Composition datapoint."""
+    """No fund has more than one row for a Fund Info or GAV Composition datapoint.
+
+    A datapoint with no row is a gap, listed by `check_datapoint_coverage`.
+    """
     out = []
     funds = sorted(df["fund"].dropna().unique())
     for category in ["Fund Info", "GAV Composition"]:
@@ -239,21 +261,20 @@ def check_fund_level_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFram
         for fund in funds:
             for dp in rules["datapoints"][category]:
                 n = int(counts.get((fund, dp), 0))
-                if n != 1:
+                if n > 1:
                     out.append(_issue("fund_level_count", "error",
                                       f"{category}: expected 1 row, found {n}", fund, dp))
     return _frame(out)
 
 
 def check_time_series_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Debt maturity and projection series are dated, forward-looking and complete per fund.
+    """Debt maturity and projection series are dated, forward-looking and complete per reporting fund.
 
     Expected calendars are derived from the reporting date, so a gap shared by every
     fund is still caught. Projections may follow any one of the allowed calendars.
     """
     out = []
     report = pd.Timestamp(rules["reporting_date"])
-    funds = sorted(df["fund"].dropna().unique())
     series = df[df["category"].isin(["Debt Maturity", "Projection"])]
 
     out += _row_issues(series[series["date"].isna()], "series_date_missing", "error",
@@ -264,7 +285,9 @@ def check_time_series_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFra
     # Debt maturity: one fixed yearly calendar.
     debt = _dp(series, "Debt maturity value")
     debt_cal = set(calendar(report, rules["debt_maturity_calendar"]))
-    for fund in funds:
+    # A fund with no rows at all for a series does not report it: a gap listed by
+    # check_datapoint_coverage, not a partial calendar.
+    for fund in sorted(debt["fund"].dropna().unique()):
         dates = set(debt.loc[debt["fund"] == fund, "date"].dropna())
         missing, extra = debt_cal - dates, dates - debt_cal
         if missing or extra:
@@ -281,7 +304,7 @@ def check_time_series_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFra
     fund_freq: dict[str, set[str]] = {}  # calendar name -> funds using it
     for dp in rules["datapoints"]["Projection"]:
         sub = _dp(series, dp)
-        for fund in funds:
+        for fund in sorted(sub["fund"].dropna().unique()):
             dates = set(sub.loc[sub["fund"] == fund, "date"].dropna())
             match = [name for name, cal in calendars.items() if dates == cal]
             if match:
@@ -331,14 +354,11 @@ def check_exposure_completeness(df: pd.DataFrame) -> pd.DataFrame:
         (SECTOR_L1, SECTOR_PCT_L1),
     ]
     for fund, g in df.groupby("fund"):
-        if g["category"].eq("Exposure - Geography").sum() == 0:
-            out.append(_issue("no_geography", "error", "No geography exposure rows", fund))
-        if g["category"].eq("Exposure - Sector").sum() == 0:
-            out.append(_issue("no_sector", "error", "No sector exposure rows", fund))
         for label_dp, pct_dp in pairs:
             labels = set(_dp(g, label_dp)["a1"].dropna())
             pcts = set(_dp(g, pct_dp)["a1"].dropna())
-            if labels != pcts:
+            # A side with no rows is a datapoint the fund does not report (a gap, listed separately).
+            if labels and pcts and labels != pcts:
                 out.append(_issue("exposure_members_mismatch", "error",
                                   f"{label_dp} members {sorted(labels ^ pcts)} not matched in {pct_dp}",
                                   fund, label_dp))
@@ -353,7 +373,11 @@ def check_exposure_completeness(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def check_value_type(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Each row populates exactly the one value field its datapoint expects."""
+    """Each row populates exactly the one value field its datapoint expects.
+
+    A row with no value at all (blank, null or NA) is a gap (`value_missing`, info), except for
+    datapoints in `none_when_missing`, where it means "none". A value in the wrong field is an error.
+    """
     kind_of = {d: k for dps in rules["datapoints"].values() for d, k in dps.items()}
     field = {"num": "value_num", "date": "value_date", "str": "value_str"}
     populated = df[list(field.values())].notna()
@@ -361,13 +385,18 @@ def check_value_type(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
 
     # A row is wrong if any field's populated-state differs from "is the expected field".
     wrong = pd.concat({f: populated[f] != expected.eq(f) for f in field.values()}, axis=1).any(axis=1)
-    bad = df[wrong & expected.notna()]  # unknown datapoints are reported by the catalogue check
+    # Non-numeric text is reported as non_numeric_value, so it is not a blank.
+    empty = ~populated.any(axis=1) & expected.notna() & df["value_num_text"].isna()
+    none = df["datapoint"].isin(list(rules["none_when_missing"]))
+    bad = df[wrong & expected.notna() & ~empty]  # unknown datapoints are reported by the catalogue check
 
     def detail(r: pd.Series) -> str:
         filled = [f for f in field.values() if populated.at[r.name, f]] or ["nothing"]
         return f"Expected only {expected.at[r.name]}, found {', '.join(filled)}"
 
     out = _row_issues(bad, "value_field", "error", detail)
+    out += _row_issues(df[empty & ~none], "value_missing", "info",
+                       lambda r: "Reported with no value (blank, null or NA)")
     text = df[df["value_num_text"].notna()]
     out += _row_issues(text, "non_numeric_value", "error",
                        lambda r: f"Value Num holds non-numeric text {r['value_num_text']!r}")
@@ -444,8 +473,12 @@ def check_labels(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
 
 
 def _sum_check(df: pd.DataFrame, datapoints: list[str], label: str, tol: float) -> list[dict[str, Any]]:
-    """Per fund, the values of the given datapoints must add up to 1."""
-    totals = df[df["datapoint"].isin(datapoints)].groupby("fund")["value_num"].sum()
+    """Per fund, the values of the given datapoints must add up to 1.
+
+    A fund with no value in any of them does not report the mix (a gap, listed elsewhere) and is skipped.
+    """
+    rows = df[df["datapoint"].isin(datapoints) & df["value_num"].notna()]
+    totals = rows.groupby("fund")["value_num"].sum()
     return [
         _issue("sum_to_one", "error", f"{label} sums to {total:.4%} (off by {total - 1:+.4%})", fund,
                datapoints[0] if len(datapoints) == 1 else label)
@@ -539,8 +572,8 @@ def check_occupancy_weighted(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     for fund in sorted(df["fund"].dropna().unique()):
         rep, w = reported.get(fund, np.nan), weighted.get(fund, np.nan)
         if pd.isna(rep) or pd.isna(w):
-            # Missing inputs are a gap, not a pass.
-            out.append(_issue("occupancy_weighted", "warning",
+            # Missing inputs are a data gap: noted, not passed silently and not a warning.
+            out.append(_issue("occupancy_weighted", "info",
                               "Cannot compare: fund occupancy or weighted sector occupancy missing",
                               fund, OCC_FUND))
         elif not abs(rep - w) <= tol:
@@ -559,6 +592,10 @@ RULE_INPUTS = [
 ]
 
 
+# Inputs without which the balance-sheet rules (NAV vs GAV, LTV vs cap, debt) cannot run.
+CORE_INPUTS = ["Fund GAV", "Fund NAV", "Fund LTV (current)"]
+
+
 def check_business_rules(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     """Fund-level relationships: NAV vs GAV, LTV vs cap, lifecycle split, debt, fees, dates."""
     w = fund_info_wide(df)
@@ -569,12 +606,16 @@ def check_business_rules(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
         """Column, or all-NaN if a datapoint is absent (absence is reported elsewhere)."""
         return w[name] if name in w else pd.Series(np.nan, index=w.index)
 
-    # Comparisons below are False on NaN, so name skipped funds explicitly.
-    needed = [*RULE_INPUTS, *{d for pair in rules["date_order"] for d in pair}]
+    # Comparisons below are False on NaN, so name skipped funds explicitly. Missing inputs are data
+    # gaps (info), except GAV, NAV and LTV: without them the core balance-sheet rules cannot run at all,
+    # so that is a warning. "None when missing" datapoints such as Bad debts are never missing inputs.
+    none = set(rules["none_when_missing"])
+    needed = [n for n in [*RULE_INPUTS, *{d for pair in rules["date_order"] for d in pair}] if n not in none]
     for fund in w.index:
         gaps = [n for n in needed if pd.isna(col(n)[fund])]
         if gaps:
-            out.append(_issue("rule_inputs_missing", "error",
+            core = set(gaps) & set(CORE_INPUTS)
+            out.append(_issue("rule_inputs_missing", "warning" if core else "info",
                               f"Business rules partly skipped; missing: {', '.join(gaps)}", fund))
 
     gav, nav = col("Fund GAV"), col("Fund NAV")
@@ -603,8 +644,9 @@ def check_business_rules(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
         out.append(_issue("lifecycle_split", "error",
                           f"Completed + under development = {split[fund]:.2%}", fund, "Completed assets"))
 
-    # Scheduled debt maturities should total current debt (LTV x GAV); no schedule counts as 0.
-    debt = _dp(df, "Debt maturity value").groupby("fund")["value_num"].sum().reindex(w.index, fill_value=0)
+    # Scheduled debt maturities should total current debt (LTV x GAV). Funds without a valued schedule
+    # do not report it: a gap listed by the coverage checks, so they are not compared here.
+    debt = _dp(df, "Debt maturity value").groupby("fund")["value_num"].sum(min_count=1).reindex(w.index)
     expected_debt = ltv * safe_gav
     ratio = debt / expected_debt.where(expected_debt > 0)
     off = (ratio < tol["debt_vs_ltv_low"]) | (ratio > tol["debt_vs_ltv_high"])
@@ -641,9 +683,15 @@ def check_business_rules(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
 # ---------------------------------------------------------------- outliers
 
 
-def fund_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Fund-level frame plus derived, currency-free ratios used for outlier checks."""
+def fund_metrics(df: pd.DataFrame, none_when_missing: Iterable[str] = ()) -> pd.DataFrame:
+    """Fund-level frame plus derived, currency-free ratios used for outlier checks.
+
+    Datapoints in `none_when_missing` (from the rules) are 0 where a fund does not report them.
+    """
     w = fund_info_wide(df)
+    for name in none_when_missing:
+        if name in w:
+            w[name] = w[name].fillna(0.0)
 
     def col(name: str) -> pd.Series:
         """Numeric column, or all-NaN if the datapoint is absent."""
@@ -659,7 +707,7 @@ def fund_metrics(df: pd.DataFrame) -> pd.DataFrame:
 def check_outliers(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     """Flag funds outside the Tukey fences on currency-free metrics."""
     k = rules["outlier_iqr_k"]
-    m = fund_metrics(df)
+    m = fund_metrics(df, rules["none_when_missing"])
     unknown = [x for x in rules["outlier_metrics"] if x not in m]
     if unknown:
         # A typo in the rules would otherwise silently disable the check.
@@ -732,6 +780,7 @@ def run_all(raw: pd.DataFrame, df: pd.DataFrame, rules: Rules, reference: pd.Dat
         ("check_reporting_date", lambda: check_reporting_date(df, rules)),
         ("check_keys_and_funds", lambda: check_keys_and_funds(df, rules)),
         ("check_datapoint_catalogue", lambda: check_datapoint_catalogue(df, rules)),
+        ("check_datapoint_coverage", lambda: check_datapoint_coverage(df, rules)),
         ("check_fund_level_completeness", lambda: check_fund_level_completeness(df, rules)),
         ("check_time_series_completeness", lambda: check_time_series_completeness(df, rules)),
         ("check_dimensions", lambda: check_dimensions(df)),

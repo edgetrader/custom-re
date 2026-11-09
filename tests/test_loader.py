@@ -40,11 +40,19 @@ def test_tidy_coerces_bad_dates_to_nat_and_keeps_number_text(raw):
     raw["Value Num"] = raw["Value Num"].astype(object)
     raw["Date"] = raw["Date"].astype(object)
     raw.loc[0, "Date"] = "not a date"
-    raw.loc[0, "Value Num"] = "n/a"
+    raw.loc[0, "Value Num"] = "tbc"
     df = tidy(raw)
     assert pd.isna(df.loc[0, "date"])
-    assert df.loc[0, "value_num_text"] == "n/a"
+    assert df.loc[0, "value_num_text"] == "tbc"
     assert df["value_num_text"].notna().sum() == 1
+
+
+@pytest.mark.parametrize("text", ["NA", "n/a", " null ", "Null"])
+def test_null_text_in_value_num_is_no_value(raw, text):
+    raw["Value Num"] = raw["Value Num"].astype(object)
+    raw.loc[0, "Value Num"] = text
+    df = tidy(raw)
+    assert pd.isna(df.loc[0, "value_num"]) and pd.isna(df.loc[0, "value_num_text"])
 
 
 def test_load_rules_reads_yaml():

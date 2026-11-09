@@ -8,7 +8,7 @@ from typing import cast
 
 import pandas as pd
 
-from custom_re.completeness import MISSING, REPORTED
+from custom_re.completeness import MISSING, NO_VALUE, NONE, NOT_REPORTED, PARTIAL, REPORTED, ZERO_ONLY
 from custom_re.insights import CARE, EMPTY, NOT_USABLE, RATINGS, READY, ReportData, ratings_count, slug
 
 RATING_TEXT = {
@@ -91,7 +91,8 @@ padding:2px 9px;border-radius:999px}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px 32px}
 .cols ul{margin:6px 0 0;padding-left:20px;color:var(--muted)}h3.small{font-size:14px;margin:0}
 .gap-top{margin-top:18px}.gap-sm{margin-top:8px}
-.note{margin:10px 0 0;font-size:14px;color:var(--bad)}.bad-text{color:var(--bad);font-weight:600}
+.note{margin:10px 0 0;font-size:14px;color:var(--bad)}.small-text{font-size:12px}
+details.inline{margin:0}details.inline summary{font-weight:400}.bad-text{color:var(--bad);font-weight:600}
 .dist{display:grid;gap:6px;margin:14px 0 18px;max-width:640px}
 .dist div{display:grid;grid-template-columns:110px 1fr 70px;align-items:center;gap:10px;font-size:14px}
 .track{height:12px;background:var(--soft);border-radius:999px;overflow:hidden}
@@ -182,10 +183,12 @@ def _fund_row(r: dict[str, object], why: bool, gp: bool) -> str:
               f'{int(cast(int, r["datapoints_total"]))}</td>',
               f'<td class="n">{_pct(float(cast(float, r["value_share"])))}</td>']
     if why:
-        # Status first when the fund is not matched to the reference; then any zero-only datapoints.
+        # Status first when the fund is not matched to the reference; then missing and zero-only datapoints.
         parts = [f'<span class="bad-text">{_e(r["status"])}</span>'] if r["status"] != REPORTED else []
+        if r["missing_datapoints"]:
+            parts.append(f"<b>Missing:</b> {_e(r['missing_datapoints'])}")
         if r["zero_datapoints"]:
-            parts.append(_e(r["zero_datapoints"]))
+            parts.append(f"<b>Only zero:</b> {_e(r['zero_datapoints'])}")
         cells.append(f"<td>{'. '.join(parts) or '<span class=muted>—</span>'}</td>")
     return f"<tr>{''.join(cells)}</tr>"
 
@@ -194,7 +197,7 @@ def _fund_head(why: bool, gp: bool) -> str:
     """Header cells matching _fund_row."""
     return ("<th>Rank</th>" + ("<th>GP</th>" if gp else "") + "<th>Fund</th><th>Ccy</th>"
             "<th>Datapoints with value</th><th>Records with value</th>"
-            + ("<th>Gap: reported only as zero, or status</th>" if why else ""))
+            + ("<th>Gaps</th>" if why else ""))
 
 
 def _fund_table(rows: pd.DataFrame, why: bool = True) -> str:
@@ -320,7 +323,11 @@ def _dp_rows(dc: pd.DataFrame) -> str:
             f'<tr><td>{_e(r["datapoint"])}</td><td class="muted">{_e(r["category"])}</td>'
             f'<td class="n">{int(r["funds_reporting"])} / {total}</td>'
             f'<td><span class="meter"><span class="track"><i style="width:{width:.1f}%"></i></span>'
-            f'<span class="n">{valued} / {total}</span></span></td><td class="n">{share}</td></tr>'
+            f'<span class="n">{valued} / {total}</span></span></td><td class="n">{share}</td>'
+            + "".join(f'<td class="n">{int(r[c]) or "—"}</td>'
+                      for c in ("funds_not_reported", "funds_no_value", "funds_partial", "funds_zero_only",
+                                "funds_none"))
+            + "</tr>"
         )
     return "".join(out)
 
@@ -329,29 +336,72 @@ def _dp_table(dc: pd.DataFrame) -> str:
     """Datapoint completeness table."""
     return ('<div class="table-wrap"><table><thead><tr><th>Datapoint</th><th>Category</th>'
             '<th>Funds reporting</th>'
-            '<th>Funds with value</th><th>Records with value</th></tr></thead>'
+            '<th>Funds with value</th><th>Records with value</th><th>Not reported</th><th>No value</th>'
+            '<th>No value in some records</th><th>Only zero</th><th>Treated as none</th></tr></thead>'
             f"<tbody>{_dp_rows(dc)}</tbody></table></div>")
 
 
+def _fund_list(funds: list[str], limit: int = 4) -> str:
+    """Comma-separated fund names; a longer list folds into a details element with a count."""
+    if not funds:
+        return '<span class="muted">—</span>'
+    names = ", ".join(_e(f) for f in funds)
+    if len(funds) <= limit:
+        return names
+    return f'<details class="inline"><summary>{_plural_funds(len(funds))}</summary>{names}</details>'
+
+
 def _datapoint_completeness(d: ReportData) -> str:
-    dc = d.datapoint_completeness
+    dc, gaps = d.datapoint_completeness, d.gaps
     if dc.empty:
         return ""
-    # Gaps: a fund with only zeros, or zero periods/positions within a series.
-    gaps = dc[(dc["funds_with_value"] < dc["funds_total"]) | (dc["records_with_value"] < dc["records"])]
+    funds_by = {k: sorted(g["fund"]) for k, g in gaps.groupby(["datapoint", "gap"], sort=False)}
+    # Funds with some records blank (e.g. series periods) share the "No value" column, marked as such.
+    for (dp, g), funds in list(funds_by.items()):
+        if g == PARTIAL:
+            funds_by[(dp, NO_VALUE)] = sorted(funds_by.get((dp, NO_VALUE), [])
+                                              + [f"{f} (some records)" for f in funds])
     n_full = int((dc["funds_with_value"] == dc["funds_total"]).sum())
-    complete = dc.loc[~dc.index.isin(gaps.index)]
-    lead = (f'<p>The other {len(complete)} datapoints have a non-zero value in every record '
-            'for every fund.</p>'
-            if len(complete) else "")
-    body = (f'<h3 class="small">Datapoints with zero values, most complete first</h3>'
-            f'<div class="gap-sm">{_dp_table(gaps)}</div>' if len(gaps) else "")
+    # Datapoints with a fund lacking a value, or with zero periods/positions inside a series.
+    gap_cols = ["funds_not_reported", "funds_no_value", "funds_partial", "funds_zero_only"]
+    short = dc[(dc[gap_cols].sum(axis=1) > 0) | (dc["records_with_value"] < dc["records"])]
+    rows = []
+    for r in short.to_dict("records"):
+        dp, total, valued = r["datapoint"], int(r["funds_total"]), int(r["funds_with_value"])
+        width = valued / total * 100 if total else 0.0
+        recs = int(r["records"])
+        share = _pct(int(r["records_with_value"]) / recs) if recs else "—"
+        cells = "".join(f"<td>{_fund_list(funds_by.get((dp, g), []))}</td>"
+                        for g in (NOT_REPORTED, NO_VALUE, ZERO_ONLY))
+        rows.append(
+            f'<tr><td>{_e(dp)}<div class="muted small-text">{_e(r["category"])}</div></td>'
+            f'<td><span class="meter"><span class="track"><i style="width:{width:.1f}%"></i></span>'
+            f'<span class="n">{valued} / {total}</span></span></td><td class="n">{share}</td>{cells}</tr>'
+        )
+    table = (
+        '<h3 class="small">Funds missing each datapoint or its value</h3><div class="table-wrap gap-sm">'
+        '<table><thead><tr><th>Datapoint</th><th>Funds with value</th><th>Records with value</th>'
+        '<th>Not reported</th><th>No value (blank, null or NA)</th><th>Reported only as zero</th></tr>'
+        f'</thead><tbody>{"".join(rows)}</tbody></table></div>' if rows else "")
+    # "None when missing" datapoints: an answer, not a gap, but the funds are named so the
+    # assumption can be checked.
+    none_notes = "".join(
+        f'<p class="gap-sm"><b>{_e(dp)}</b>: {_e(g["note"].iloc[0].lower())} for {_plural_funds(len(g))} '
+        f'(not reported, blank or zero), treated as none rather than a gap: '
+        f'{_fund_list(sorted(g["fund"]))}.</p>'
+        for dp, g in gaps[gaps["gap"] == NONE].groupby("datapoint", sort=False)
+    )
+    # "None when missing" datapoints are described by their own note, not as fully valued.
+    n_rest = int((~dc.index.isin(short.index) & (dc["funds_none"] == 0)).sum())
+    lead = (f"<p>The other {n_rest} datapoints have a non-zero value in every record for every fund.</p>"
+            if n_rest else "")
     return (
         f'<section id="datapoint-completeness"><h2>Datapoint completeness: {n_full} of {len(dc)} '
-        'have a value for every fund</h2><p class="sub">"Funds with value" counts funds with at '
-        'least one non-zero record. '
+        'have a value for every fund</h2><p class="sub">Not every fund is expected to report every '
+        'datapoint. For each datapoint below, the funds are named by kind of gap: not reported at all, '
+        'reported with no value (blank, null or NA), or reported only as zero, which may be genuine. '
         '"Records with value" is the share of records that are non-zero: for time series it shows how many '
-        f'periods carry a figure.</p>{body}{lead}'
+        f'periods carry a figure.</p>{table}{none_notes}{lead}'
         f"<details><summary>All {len(dc)} datapoints</summary>{_dp_table(dc)}</details></section>"
     )
 

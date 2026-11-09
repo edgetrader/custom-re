@@ -12,9 +12,13 @@ import pandas as pd
 from custom_re.checks import CHECK_GROUPS, calendar
 from custom_re.completeness import (
     MISSING,
+    NO_VALUE,
+    NOT_REPORTED,
+    PARTIAL,
     REPORTED,
     UNLISTED,
     datapoint_completeness,
+    datapoint_gaps,
     fund_completeness,
     gp_completeness,
 )
@@ -102,6 +106,7 @@ class ReportData:
     gp_completeness: pd.DataFrame  # one row per GP, most complete first
     fund_completeness: pd.DataFrame  # one row per fund (extract or GP reference), most complete first
     datapoint_completeness: pd.DataFrame  # one row per datapoint, most complete first
+    gaps: pd.DataFrame  # one row per datapoint and fund lacking a value (datapoint_gaps)
     top_n: int  # funds shown as most and least complete
 
 
@@ -196,6 +201,7 @@ def datapoint_register(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame
     funds = df["fund"].dropna().unique()
     n_funds = len(funds)
     amounts = set(rules["amount_datapoints"])
+    none_when_missing = rules["none_when_missing"]
     n_ccy = df.groupby("fund")["currency"].first().nunique()
     w = fund_info_wide(df)
     sev = issues[issues["severity"].isin(["error", "warning"])]
@@ -214,6 +220,12 @@ def datapoint_register(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame
             # Generic rules: missing funds and check findings outrank any caveat.
             if not n_funds:
                 row.flag(NOT_USABLE, "No funds in the extract.")
+            elif dp in none_when_missing:
+                # Not reported, blank or zero is an answer here ("none"), so coverage is not a gap.
+                n_none = n_funds - int(sub.loc[sub[VALUE_COL[kind]].fillna(0) != 0, "fund"].nunique())
+                if n_none:
+                    row.notes.append(f"{_plural(n_none, 'fund')}: {none_when_missing[dp].lower()} "
+                                     "(not reported, blank or zero), treated as none.")
             elif covered < n_funds:
                 row.flag(CARE if covered else NOT_USABLE,
                          f"Missing for {n_funds - covered} of {n_funds} funds.")
@@ -228,7 +240,7 @@ def datapoint_register(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame
             if dp in amounts and n_ccy > 1:
                 # One currency per fund is by design: fine per fund, so a note, not a lower rating.
                 row.notes.append("In the fund's own currency; compare funds by ratios, not totals.")
-            if dp in amounts:
+            if dp in amounts and dp not in none_when_missing:
                 zeros = int((vals == 0).sum())
                 if category in SERIES_CATEGORIES and zeros:
                     row.notes.append(f"{zeros / len(vals):.0%} of periods are zero.")
@@ -336,7 +348,7 @@ def _exact_occupancy_share(df: pd.DataFrame, w: pd.DataFrame, cfg: dict[str, Any
 
 
 def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: Rules,
-             fc: pd.DataFrame) -> list[Finding]:
+             fc: pd.DataFrame, reference: pd.DataFrame) -> list[Finding]:
     """Return management findings that apply to this quarter, most severe first.
 
     `fc` is the fund completeness table (fund_completeness), which carries each fund's GP and status.
@@ -373,10 +385,30 @@ def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: R
             out.append(Finding(title.format(_plural(len(sub), "fund"), "is" if len(sub) == 1 else "are"),
                                "bad", "Fund coverage", f"{listed}.", action))
 
-    # Datapoints a fund reports, but only ever as zero. Absent datapoints are check errors instead.
+    # Datapoints some funds do not report, or report with no value. Expected to happen, so info.
+    gaps = datapoint_gaps(df, rules, reference)
+    missing = gaps[gaps["gap"].isin([NOT_REPORTED, NO_VALUE, PARTIAL])]
+    if len(missing):
+        per_dp = missing.groupby("datapoint", sort=False)["fund"].nunique().sort_values(
+            ascending=False, kind="stable")
+        listed = ", ".join(f"{dp} ({_plural(int(n), 'fund')})" for dp, n in per_dp.head(TOP_CHECKS).items())
+        more = f", and {len(per_dp) - TOP_CHECKS} more" if len(per_dp) > TOP_CHECKS else ""
+        out.append(Finding(
+            f"{_plural(len(per_dp), 'datapoint')} {'is' if len(per_dp) == 1 else 'are'} "
+            "missing for some funds",
+            "info", "Data gaps",
+            f"{_plural(missing['fund'].nunique(), 'fund')} do not report a datapoint or report it "
+            "with no value "
+            f"(blank, null or NA) in some or all records: {listed}{more}. "
+            "Not every fund is expected to report everything.",
+            "Ask managers for the missing values or confirm they do not apply; the funds are listed by "
+            "datapoint below and in the Datapoint Gaps sheet.",
+        ))
+
+    # Datapoints a fund reports, but only ever as zero.
     dc = datapoint_completeness(df, rules)
     zero_funds = fc[(fc["zero_datapoints"] != "") & (fc["status"] != MISSING)]
-    zero_dps = (dc.set_index("datapoint")["funds_reporting"] - dc.set_index("datapoint")["funds_with_value"])
+    zero_dps = dc.set_index("datapoint")["funds_zero_only"]
     zero_dps = zero_dps[zero_dps > 0].sort_values(ascending=False, kind="stable")
     if len(zero_funds):
         listed = ", ".join(f"{dp} ({_plural(int(n), 'fund')})" for dp, n in zero_dps.items())
@@ -429,14 +461,15 @@ def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: R
         if unmatched > 0:
             parts.append(f"{_plural(unmatched, 'fund')} matching no calendar (see series_gap)")
         # A calendar that skips its first period(s) leaves a gap right after the reporting date.
-        gaps = []
+        # Own name: `gaps` above is the datapoint-gaps DataFrame.
+        skip_notes: list[str] = []
         for name, spec in rules["projection_calendars"].items():
             if spec.get("skip") and name in freq:
                 skipped = calendar(report, {**spec, "periods": spec["skip"], "skip": 0})
-                gaps.append(f" The {name} calendar skips {', '.join(f'{d:%B %Y}' for d in skipped)}.")
+                skip_notes.append(f" The {name} calendar skips {', '.join(f'{d:%B %Y}' for d in skipped)}.")
         out.append(Finding(
             "Cash-flow projections use different calendars", "info", "Timing differs",
-            "; ".join(parts) + "." + "".join(gaps),
+            "; ".join(parts) + "." + "".join(skip_notes),
             "Compare funds' projections by quarter, and confirm any skipped month is by design.",
         ))
 
@@ -530,14 +563,19 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
     register = datapoint_register(df, raw, issues, rules)
     fc = fund_completeness(df, rules, reference)
     gc = gp_completeness(fc, issues)
-    found = findings(df, raw, issues, rules, fc)
+    found = findings(df, raw, issues, rules, fc, reference)
     n_funds = df["fund"].nunique()
     catalogue = [dp for dps in rules["datapoints"].values() for dp in dps]
     # INFO checks are observations, not defects, so they count as passed.
     n_pass = int((summary["status"] != "FLAG").sum())
     n_ccy = df.groupby("fund")["currency"].first().nunique()
-    full = sum(r.total > 0 and r.coverage == r.total for r in register if r.rating != EMPTY)
     dc = datapoint_completeness(df, rules)
+    # Filled for every fund; a "none when missing" datapoint counts, since no value there means none.
+    missing_per_dp = dc["funds_not_reported"] + dc["funds_no_value"] + dc["funds_partial"]
+    full = int((missing_per_dp == 0).sum()) if n_funds else 0
+    has_gaps = bool(missing_per_dp.sum())
+    state = ("Consistent, with some datapoints missing for some funds" if has_gaps
+             else "Complete and consistent")
     # Fund coverage against the reference; funds not in the reference are reported but not expected.
     n_expected = int((fc["status"] != UNLISTED).sum())
     n_expected_reported = int((fc["status"] == REPORTED).sum())
@@ -554,10 +592,13 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
     elif blockers:
         # Clean checks, but some findings need confirming before the affected funds are relied on.
         tone = "warn"
-        verdict = f"Complete and consistent, with {_plural(len(blockers), 'point')} to confirm with managers."
+        points = f"{_plural(len(blockers), 'point')} to confirm with managers"
+        verdict = (f"Consistent, with {points} and some datapoints missing for some funds." if has_gaps
+                   else f"Complete and consistent, with {points}.")
     else:
         tone = "good"
-        verdict = "Complete and internally consistent. Fit for fund-level reporting and comparison."
+        verdict = (f"{state}. Fit for fund-level reporting and comparison"
+                   + (" where reported." if has_gaps else "."))
     detail = (f"{n_pass} of {len(summary)} automated checks passed, with {_plural(counts['error'], 'error')} "
               f"and {_plural(counts['warning'], 'warning')}. {full} of {len(catalogue)} datapoints are "
               f"filled for all {n_funds} funds.")
@@ -583,6 +624,7 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
     ]
     return ReportData(period_label, report, source_name, tone, verdict, detail, figures, register, found,
                       _check_groups(summary), flagged, counts, unassigned, gc, fc, dc,
+                      datapoint_gaps(df, rules, reference),
                       int(rules["report"]["completeness_top_n"]))
 
 

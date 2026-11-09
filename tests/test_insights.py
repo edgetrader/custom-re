@@ -92,12 +92,19 @@ def test_fund_past_term_is_reported(raw, rules):
 
 
 def test_errors_make_report_not_ready(raw, rules):
-    raw = raw[~((raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund GAV"))].reset_index(drop=True)
+    raw.loc[(raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund GAV"), "Value Num"] = -1.0
     rep = _report(raw, rules)
     assert rep.verdict_tone == "bad"
     assert rep.findings[0].tone == "bad" and "error" in rep.findings[0].title
+    assert _rating(rep, "Fund GAV").rating == NOT_USABLE
+
+
+def test_missing_datapoint_is_a_gap_not_an_error(raw, rules):
+    raw = raw[~((raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Fund GAV"))].reset_index(drop=True)
+    rep = _report(raw, rules)
+    assert rep.counts["error"] == 0 and rep.verdict_tone != "bad"
     gav = _rating(rep, "Fund GAV")
-    assert gav.coverage == 1 and gav.rating == NOT_USABLE
+    assert gav.coverage == 1 and gav.rating == CARE
 
 
 def test_check_groups_cover_every_check(raw, rules):
@@ -145,3 +152,14 @@ def test_absent_datapoint_is_not_called_a_zero(raw, rules):
     f = next(f for f in rep.findings if "only as zero" in f.title)
     assert "Fund NAV" not in f.body  # absent, not zero: reported by the checks as an error instead
     assert f.title.startswith("2 funds")  # both still report carried interest as 0.0
+
+
+def test_missing_datapoints_finding_and_no_bad_debt_note(raw, rules):
+    dps = ["Fund Target Net IRR", "Bad debts"]
+    raw = raw[~((raw["Company"] == "Fund B") & raw["Datapoint.Name"].isin(dps))]
+    rep = _report(raw.reset_index(drop=True), rules)
+    f = next(f for f in rep.findings if f.tag == "Data gaps")
+    assert f.title == "1 datapoint is missing for some funds" and "Fund Target Net IRR (1 fund)" in f.body
+    assert f.tone == "info" and rep.verdict_tone == "good"
+    bad = _rating(rep, "Bad debts")
+    assert bad.rating == READY and any("no bad debt" in n for n in bad.notes)

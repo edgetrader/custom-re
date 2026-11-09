@@ -18,6 +18,7 @@ from custom_re.completeness import (  # noqa: E402
     MISSING,
     UNLISTED,
     datapoint_completeness,
+    datapoint_gaps,
     fund_completeness,
     gp_completeness,
 )
@@ -84,9 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     fc = fund_completeness(df, rules, reference)
     gc, dc = gp_completeness(fc, issues), datapoint_completeness(df, rules)
     # GP first, then fund: the workbook's fund-level sheets carry the GP for filtering.
+    metrics = add_gp(fund_metrics(df, rules["none_when_missing"]).reset_index(), reference)
     write_report(out_dir / REPORT_NAME, summary, add_gp(issues, reference),
-                 add_gp(fund_metrics(df).reset_index(), reference).set_index(["gp", "fund"]),
-                 {"GP Completeness": gc, "Fund Completeness": fc, "Datapoint Completeness": dc})
+                 metrics.set_index(["gp", "fund"]),
+                 {"GP Completeness": gc, "Fund Completeness": fc, "Datapoint Completeness": dc,
+                  "Datapoint Gaps": datapoint_gaps(df, rules, reference)})
     # The HTML report is presentation: a bug there must not hide the Excel results or look like a
     # data-quality failure, so it is isolated here at the app boundary.
     html_ok = True

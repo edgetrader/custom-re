@@ -4,6 +4,11 @@ Funds report in their own currencies, so completeness is judged on whether value
 on their size. A value "exists" when it is present and, for numbers, non-zero: a zero is a
 reported value but carries no information (it may mean "none" or "not reported"), so it is
 counted separately rather than as missing.
+
+Funds are not expected to report every datapoint. For each fund and datapoint the gap, if any, is
+one of: not reported (no rows), no value (rows that are blank, null or NA) or reported only as zero.
+Datapoints in the rules' `none_when_missing` (e.g. Bad debts) mean "none" when not reported, empty
+or zero, so for them that is an answer, not a gap.
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ from typing import Any, cast
 
 import pandas as pd
 
-from custom_re.reference import UNMAPPED, gp_map
+from custom_re.reference import UNMAPPED, add_gp, gp_map
 
 Rules = dict[str, Any]
 VALUE_COL = {"num": "value_num", "date": "value_date", "str": "value_str"}
@@ -20,10 +25,16 @@ VALUE_COL = {"num": "value_num", "date": "value_date", "str": "value_str"}
 # Fund status against the GP reference.
 REPORTED, MISSING, UNLISTED = "Reported", "Missing from extract", "Not in reference"
 
+# State of one datapoint for one fund, worst gap last.
+VALUED, NONE = "Has a value", "None"
+ZERO_ONLY, NO_VALUE, NOT_REPORTED = "Reported only as zero", "No value (blank, null or NA)", "Not reported"
+PARTIAL = "No value in some records"  # e.g. a series with some periods blank
+GAPS = [NOT_REPORTED, NO_VALUE, PARTIAL, ZERO_ONLY]
+
 FUND_COLUMNS = [
     "rank", "gp", "fund", "status", "currency", "datapoints_reported", "datapoints_with_value",
-    "datapoints_total",
-    "records", "records_with_value", "value_share", "zero_datapoints",
+    "datapoints_total", "records", "records_with_value", "value_share", "missing_datapoints",
+    "zero_datapoints",
 ]
 GP_COLUMNS = [
     "rank", "gp", "funds_expected", "funds_reported", "funds_missing", "funds_all_valued",
@@ -31,9 +42,11 @@ GP_COLUMNS = [
     "records_with_value", "value_share", "errors", "warnings", "currencies", "least_complete_fund",
 ]
 DATAPOINT_COLUMNS = [
-    "category", "datapoint", "funds_reporting", "funds_with_value", "funds_total",
-    "records", "records_with_value", "value_share",
+    "category", "datapoint", "funds_reporting", "funds_with_value", "funds_total", "funds_not_reported",
+    "funds_no_value", "funds_partial", "funds_zero_only", "funds_none", "records", "records_with_value",
+    "value_share",
 ]
+GAP_COLUMNS = ["category", "datapoint", "gap", "gp", "fund", "note"]
 
 
 def _catalogue(rules: Rules) -> pd.DataFrame:
@@ -45,7 +58,11 @@ def _catalogue(rules: Rules) -> pd.DataFrame:
 
 
 def _flag_values(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Catalogued records with `present` (field filled) and `valued` (filled and, if numeric, non-zero)."""
+    """Catalogued records with `present` (field filled) and `valued` (filled and, if numeric, non-zero).
+
+    For "none when missing" datapoints a zero is a full answer (none), so it counts as valued. `positive`
+    is the literal non-zero value and `blank` marks a record with nothing filled at all.
+    """
     cat = _catalogue(rules)
     sub = df.merge(cat[["datapoint", "kind"]], on="datapoint", how="inner")
     # A value counts only in the field its kind expects; one filled in the wrong field is a
@@ -57,7 +74,38 @@ def _flag_values(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
         present |= is_kind & sub[col].notna()
     numeric = sub["kind"] == "num"
     zero = numeric & present & (sub["value_num"] == 0)
-    return sub.assign(present=present, valued=present & ~zero)
+    none = sub["datapoint"].isin(list(rules["none_when_missing"]))
+    # Text that is not a number is an error in the checks, not a blank.
+    blank = sub[list(VALUE_COL.values())].isna().all(axis=1) & sub["value_num_text"].isna()
+    return sub.assign(present=present, valued=present & (~zero | none), positive=present & ~zero, blank=blank)
+
+
+def _states(df: pd.DataFrame, rules: Rules, funds: list[str]) -> pd.DataFrame:
+    """One row per (fund, datapoint) for `funds` × the catalogue: present, valued and state.
+
+    State is VALUED, NONE (a "none when missing" datapoint with no positive value) or a gap from GAPS.
+    `valued` is True for VALUED, PARTIAL and NONE: the fund answers the datapoint. Funds absent from the
+    extract get NOT_REPORTED everywhere; callers treat them separately.
+    """
+    cat = _catalogue(rules)
+    flags = _flag_values(df, rules)
+    per_dp = flags.groupby(["fund", "datapoint"])[["present", "valued", "positive", "blank"]].any()
+    per_dp["rows"] = True
+    grid = pd.MultiIndex.from_product([funds, cat["datapoint"]], names=["fund", "datapoint"])
+    per_dp = per_dp.reindex(grid, fill_value=False)
+    in_extract = per_dp.index.get_level_values("fund").isin(set(df["fund"].dropna()))
+    none = per_dp.index.get_level_values("datapoint").isin(list(rules["none_when_missing"])) & in_extract
+    state = pd.Series(VALUED, index=per_dp.index)
+    state[per_dp["valued"] & per_dp["blank"]] = PARTIAL
+    state[~per_dp["valued"]] = ZERO_ONLY
+    state[~per_dp["present"]] = NO_VALUE
+    state[~per_dp["rows"]] = NOT_REPORTED
+    # Not reported, blank or zero all mean none here, which answers the datapoint.
+    is_none = none & ~per_dp["positive"]
+    state[is_none] = NONE
+    state[none & per_dp["positive"]] = VALUED
+    per_dp.loc[is_none, "valued"] = True
+    return per_dp.assign(state=state)
 
 
 def fund_completeness(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -> pd.DataFrame:
@@ -75,10 +123,8 @@ def fund_completeness(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -
     if not funds:
         return pd.DataFrame(columns=FUND_COLUMNS)
     flags = _flag_values(df, rules)
-    per_dp = flags.groupby(["fund", "datapoint"])[["present", "valued"]].any()
     # Every catalogued datapoint for every fund, so a datapoint absent from the extract counts as missing.
-    grid = pd.MultiIndex.from_product([funds, cat["datapoint"]], names=["fund", "datapoint"])
-    per_dp = per_dp.reindex(grid, fill_value=False)
+    per_dp = _states(df, rules, funds)
 
     out = pd.DataFrame(index=pd.Index(funds, name="fund"))
     out["gp"] = [gps.get(f, UNMAPPED) for f in funds]
@@ -92,13 +138,16 @@ def fund_completeness(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -
     out["records"] = recs["present"].astype(int)
     out["records_with_value"] = recs["valued"].astype(int)
     out["value_share"] = (out["records_with_value"] / out["records"].where(out["records"] > 0)).fillna(0.0)
-    # Datapoints reported for the fund but only ever as zero: the reason a fund ranks lower.
-    zero_only = per_dp["present"] & ~per_dp["valued"]
-    zero_names = {
-        f: ", ".join(g.index.get_level_values("datapoint"))
-        for f, g in zero_only[zero_only].groupby(level="fund")
-    }
-    out["zero_datapoints"] = [zero_names.get(f, "") for f in funds]
+    # Why a fund ranks lower: datapoints missing (not reported or no value) and those only ever zero.
+    def names(mask: pd.Series) -> list[str]:
+        by_fund = {f: ", ".join(g.index.get_level_values("datapoint"))
+                   for f, g in mask[mask].groupby(level="fund")}
+        return [by_fund.get(f, "") for f in funds]
+
+    in_extract = out.index.isin(list(reported))
+    out["missing_datapoints"] = names(per_dp["state"].isin([NOT_REPORTED, NO_VALUE, PARTIAL]))
+    out.loc[~in_extract, "missing_datapoints"] = ""  # the whole fund is missing, shown by its status
+    out["zero_datapoints"] = names(per_dp["state"] == ZERO_ONLY)
     # Rank and order use the same two keys; rounding stops float noise splitting genuine ties, and
     # the fund name gives a fixed order within a tie.
     share = out["value_share"].round(10)
@@ -168,21 +217,28 @@ def gp_completeness(fc: pd.DataFrame, issues: pd.DataFrame) -> pd.DataFrame:
 
 
 def datapoint_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Per datapoint: funds reporting it, funds with a non-zero value, and the share of valued records.
+    """Per datapoint: funds reporting it, funds with a value, each kind of gap, and valued records.
 
-    Sorted most complete first (DATAPOINT_COLUMNS).
+    Covers the funds in the extract. "With value" includes funds whose "none when missing" datapoint
+    means none (`funds_none`). Sorted most complete first (DATAPOINT_COLUMNS).
     """
     cat = _catalogue(rules)
-    n_funds = df["fund"].nunique()
+    funds = sorted(df["fund"].dropna().unique())
+    states = _states(df, rules, funds).reset_index()
+    by_dp = states.groupby("datapoint").agg(
+        funds_reporting=("present", "sum"), funds_with_value=("valued", "sum"))
+    counts = states.groupby(["datapoint", "state"]).size().unstack(fill_value=0)
     flags = _flag_values(df, rules)
-    by_fund = (
-        flags.groupby(["datapoint", "fund"])[["present", "valued"]].any().groupby(level="datapoint").sum()
-    )
     recs = flags.groupby("datapoint")[["present", "valued"]].sum()
+
     out = cat.set_index("datapoint")[["category"]]
-    out["funds_reporting"] = by_fund["present"].reindex(out.index, fill_value=0).astype(int)
-    out["funds_with_value"] = by_fund["valued"].reindex(out.index, fill_value=0).astype(int)
-    out["funds_total"] = n_funds
+    out["funds_reporting"] = by_dp["funds_reporting"].reindex(out.index, fill_value=0).astype(int)
+    out["funds_with_value"] = by_dp["funds_with_value"].reindex(out.index, fill_value=0).astype(int)
+    out["funds_total"] = len(funds)
+    for col, state in [("funds_not_reported", NOT_REPORTED), ("funds_no_value", NO_VALUE),
+                       ("funds_partial", PARTIAL), ("funds_zero_only", ZERO_ONLY), ("funds_none", NONE)]:
+        out[col] = (counts[state] if state in counts else pd.Series(dtype=int)).reindex(
+            out.index, fill_value=0).astype(int)
     out["records"] = recs["present"].reindex(out.index, fill_value=0).astype(int)
     out["records_with_value"] = recs["valued"].reindex(out.index, fill_value=0).astype(int)
     out["value_share"] = (out["records_with_value"] / out["records"].where(out["records"] > 0)).fillna(0.0)
@@ -190,3 +246,28 @@ def datapoint_completeness(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
         ["funds_with_value", "value_share", "funds_reporting", "datapoint"],
         ascending=[False, False, False, True], kind="stable")
     return out[DATAPOINT_COLUMNS].reset_index(drop=True)
+
+
+def datapoint_gaps(df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -> pd.DataFrame:
+    """Every fund missing each datapoint or its value, one row per datapoint and fund (GAP_COLUMNS).
+
+    Gaps are not reported, no value, no value in some records, or reported only as zero. Funds whose
+    "none when missing" datapoint means none are listed too (gap NONE), with the rules'
+    description as the note, so the assumption stays visible. Covers funds in the extract,
+    in catalogue order then GP and fund.
+    """
+    cat = _catalogue(rules)
+    funds = sorted(df["fund"].dropna().unique())
+    states = _states(df, rules, funds).reset_index()
+    rows = states[states["state"] != VALUED].rename(columns={"state": "gap"})
+    rows = rows.merge(cat[["category", "datapoint"]], on="datapoint")
+    rows["note"] = [
+        rules["none_when_missing"][d] if g == NONE else ""
+        for d, g in zip(rows["datapoint"], rows["gap"], strict=True)
+    ]
+    rows = add_gp(rows, reference)
+    order = {d: i for i, d in enumerate(cat["datapoint"])}
+    gap_order = {g: i for i, g in enumerate([*GAPS, NONE])}
+    rows = rows.assign(_d=rows["datapoint"].map(order), _g=rows["gap"].map(gap_order)).sort_values(
+        ["_d", "_g", "gp", "fund"], kind="stable")
+    return rows[GAP_COLUMNS].reset_index(drop=True)

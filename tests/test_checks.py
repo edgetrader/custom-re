@@ -35,7 +35,7 @@ def test_valid_fixture_has_no_errors_or_warnings(raw, rules):
         (lambda r: _set(r, "Fund A", "Fund GAV", pd.Timestamp("2026-03-31"), "Reporting Date"),
          "reporting_date"),
         (lambda r: _set(r, "Fund A", "Fund GAV", "Fund GAVV", "Datapoint.Name"), "unknown_datapoint"),
-        (lambda r: _set(r, "Fund A", "Fund GAV", None), "value_field"),
+        (lambda r: _set(r, "Fund A", "Fund GAV", pd.Timestamp("2026-01-01"), "Value Date"), "value_field"),
         (lambda r: _set(r, "Fund A", "Fund GAV", "EUR", "Currency"), "mixed_currency"),
         (lambda r: _set(r, "Fund A", "Fund GAV", "XXX", "Currency"), "invalid_currency"),
         (lambda r: _set(r, "Fund A", "Fund LTV (current)", 1.3), "fraction_out_of_range"),
@@ -170,9 +170,34 @@ def test_missing_rule_inputs_are_named(raw, rules):
     assert "Fund NAV" in row["detail"].item()
 
 
-def test_no_debt_schedule_with_positive_ltv(raw, rules):
+def test_no_debt_schedule_is_a_gap_not_a_mismatch(raw, rules):
     raw = raw[~((raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Debt maturity value"))]
-    assert "debt_maturity_vs_ltv" in _flags(raw.reset_index(drop=True), rules)
+    gaps, serious = _gaps(raw.reset_index(drop=True), rules)
+    assert ("datapoint_not_reported", "Fund A", "Debt maturity value") in gaps
+    assert "debt_maturity_vs_ltv" not in serious
+
+
+def test_partly_blank_series_is_a_gap_and_debt_still_compared(raw, rules):
+    mask = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Debt maturity value")
+    raw.loc[raw.index[mask][0], "Value Num"] = None  # the only non-zero maturity
+    gaps, serious = _gaps(raw, rules)
+    assert ("value_missing", "Fund A", "Debt maturity value") in gaps
+    assert "debt_maturity_vs_ltv" in serious  # the rest of the schedule totals 0, not LTV x GAV
+
+
+def test_missing_core_input_is_a_warning(raw, rules):
+    raw = raw[~((raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund NAV"))]
+    issues = run_all(raw.reset_index(drop=True), tidy(raw.reset_index(drop=True)), rules, ref_for(raw))
+    row = issues[issues["check"] == "rule_inputs_missing"]
+    assert row["severity"].astype(str).tolist() == ["warning"]
+
+
+def test_blank_mix_is_skipped_not_summed_to_zero(raw, rules):
+    raw["Value Num"] = raw["Value Num"].astype(object)
+    for dp in ["Cash & Near Cash", "Others", "Real Estate Investments (Immovable Property)"]:
+        _set(raw, "Fund A", dp, None)
+    _, serious = _gaps(raw, rules)
+    assert "sum_to_one" not in serious
 
 
 def test_zero_gav_has_single_root_cause(raw, rules):
@@ -205,10 +230,10 @@ def test_fund_count_and_blank_fund(raw, rules):
 
 def test_non_numeric_text_in_value_num(raw, rules):
     raw["Value Num"] = raw["Value Num"].astype(object)
-    _set(raw, "Fund A", "Fund GAV", "n/a")
+    _set(raw, "Fund A", "Fund GAV", "tbc")
     issues = _issues(raw, rules)
     row = issues[issues["check"] == "non_numeric_value"]
-    assert "'n/a'" in row["detail"].item()
+    assert "'tbc'" in row["detail"].item()
 
 
 def test_outlier_flagged(rules):
@@ -236,3 +261,53 @@ def test_projection_calendar_rolls_with_reporting_date(rules):
     assert monthly[0] == pd.Timestamp("2026-11-30") and len(monthly) == 18
     debt = calendar("2026-06-30", rules["debt_maturity_calendar"])
     assert debt[0] == pd.Timestamp("2026-12-31") and debt[-1] == pd.Timestamp("2035-12-31")
+
+
+# ---------------------------------------------------------------- data gaps (info, not errors)
+
+
+def _gaps(raw, rules):
+    """(check, fund, datapoint) for every issue, plus the set of error/warning checks."""
+    issues = run_all(raw, tidy(raw), rules, ref_for(raw))
+    serious = set(issues.loc[issues["severity"].isin(["error", "warning"]), "check"])
+    return {(c, f, d) for c, f, d in issues[["check", "fund", "datapoint"]].itertuples(index=False)}, serious
+
+
+@pytest.mark.parametrize("value", [None, "NA", "null"])
+def test_blank_or_null_value_is_a_gap(raw, rules, value):
+    raw["Value Num"] = raw["Value Num"].astype(object)
+    _set(raw, "Fund A", "Weighted average cost of debt", value)
+    gaps, serious = _gaps(raw, rules)
+    assert ("value_missing", "Fund A", "Weighted average cost of debt") in gaps
+    assert not serious
+
+
+def test_unreported_datapoints_are_gaps(raw, rules):
+    drop = raw["Datapoint.Name"].isin(["Fund Target Net IRR", "Distribution amount", "Country"])
+    raw = raw[~((raw["Company"] == "Fund A") & drop)].reset_index(drop=True)
+    gaps, serious = _gaps(raw, rules)
+    for dp in ["Fund Target Net IRR", "Distribution amount", "Country"]:
+        assert ("datapoint_not_reported", "Fund A", dp) in gaps
+    # An absent series or exposure side is a gap, not a calendar or member mismatch.
+    assert not serious & {"series_gap", "exposure_members_mismatch", "fund_level_count"}
+
+
+@pytest.mark.parametrize("how", ["drop", None, "NA", "N/A"])
+def test_no_bad_debt_is_not_a_gap(raw, rules, how):
+    if how == "drop":
+        is_bad_debt = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Bad debts")
+        raw = raw[~is_bad_debt].reset_index(drop=True)
+    else:
+        raw["Value Num"] = raw["Value Num"].astype(object)
+        _set(raw, "Fund A", "Bad debts", how)
+    gaps, serious = _gaps(raw, rules)
+    assert not any(d == "Bad debts" for _, _, d in gaps)
+    assert not serious
+    rule_gaps = [g for g in gaps if g[0] == "rule_inputs_missing"]
+    assert not rule_gaps
+
+
+def test_bad_debts_absent_for_every_fund_is_fine(raw, rules):
+    raw = raw[raw["Datapoint.Name"] != "Bad debts"].reset_index(drop=True)
+    _, serious = _gaps(raw, rules)
+    assert "missing_datapoint" not in serious

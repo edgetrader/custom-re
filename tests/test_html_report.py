@@ -61,3 +61,20 @@ def test_reporting_sentence_follows_the_data(raw, rules):
     raw = raw[~((raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund NAV"))].reset_index(drop=True)
     page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
     assert "1 of 2 funds report all 36 datapoints" in page
+
+
+def test_datapoint_section_names_funds_by_gap(raw, rules):
+    raw["Value Num"] = raw["Value Num"].astype(object)
+    raw.loc[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund NAV"), "Value Num"] = "NA"
+    none_dps = ["Fund Target Net IRR", "Bad debts"]
+    fund_b_none = (raw["Company"] == "Fund B") & raw["Datapoint.Name"].isin(none_dps)
+    raw = raw[~fund_b_none]
+    page = render_html(_report(raw.reset_index(drop=True), rules), pd.Timestamp("2026-07-15"))
+    section = page[page.index('id="datapoint-completeness"'):page.index('id="register"')]
+    assert "Funds missing each datapoint or its value" in section
+    nav = section[section.index("<td>Fund NAV"):]
+    assert "Fund A" in nav[:nav.index("</tr>")]
+    assert ("no bad debt for 1 fund (not reported, blank or zero), "
+            "treated as none rather than a gap: Fund B") in section
+    # Fund tables show the gaps per fund.
+    assert "<b>Missing:</b> Fund Target Net IRR" in page
