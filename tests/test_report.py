@@ -32,6 +32,33 @@ def test_main_unreadable_extract_returns_2(tmp_path, capsys):
     assert "Error:" in capsys.readouterr().err
 
 
+def test_main_html_failure_keeps_excel_and_exit_code(raw, tmp_path, monkeypatch, capsys):
+    import app.run_dq as run_dq
+    import yaml
+
+    from tests.conftest import ROOT
+
+    # Rules sized for the two-fund fixture, so the data itself is clean (exit 0 without the failure).
+    rules = yaml.safe_load((ROOT / "config" / "dq_rules.yaml").read_text())
+    rules["expected_fund_count"] = 2
+    (tmp_path / "rules.yaml").write_text(yaml.safe_dump(rules))
+    settings = _settings(tmp_path)
+    settings.write_text(settings.read_text().replace(str(ROOT / "config" / "dq_rules.yaml"),
+                                                     str(tmp_path / "rules.yaml")))
+    (tmp_path / "data").mkdir()
+    raw.to_excel(tmp_path / "data" / "Extract_2026Q2.xlsx", sheet_name="KPI", index=False)
+
+    assert main(["Q2 2026", "--settings", str(settings)]) == 0
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(run_dq, "build_report", boom)
+    assert main(["Q2 2026", "--settings", str(settings)]) == 3
+    assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
+    assert "HTML report failed" in capsys.readouterr().err
+
+
 def _settings(tmp_path, pattern="Extract_{period}.xlsx"):
     """Settings file pointing data, output and rules into tmp_path / the real rules."""
     from tests.conftest import ROOT
@@ -52,6 +79,7 @@ def test_main_reads_period_file_and_writes_period_folder(raw, tmp_path):
     # Real rules expect 60 funds, so the two-fund fixture must exit with an error code.
     assert main(["Q2 2026", "--settings", str(_settings(tmp_path))]) == 1
     assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
+    assert (tmp_path / "out" / "2026Q2" / "dq_management_report.html").exists()
 
 
 def test_main_flags_extract_from_wrong_quarter(raw, tmp_path):

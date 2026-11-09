@@ -1,9 +1,10 @@
-"""Run all data quality checks on one quarter's KPI extract and write an Excel report."""
+"""Run all data quality checks on one quarter's KPI extract; write the Excel and HTML reports."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,12 +14,15 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from custom_re.checks import fund_metrics, run_all, summarise  # noqa: E402
+from custom_re.html_report import write_html  # noqa: E402
+from custom_re.insights import build_report  # noqa: E402
 from custom_re.loader import load_rules, read_raw, tidy  # noqa: E402
 from custom_re.report import write_report  # noqa: E402
 from custom_re.settings import load_settings, parse_period  # noqa: E402
 
 DEFAULT_SETTINGS = ROOT / "config" / "settings.yaml"
 REPORT_NAME = "dq_report.xlsx"
+HTML_NAME = "dq_management_report.html"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -33,9 +37,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the checks and write the report.
+    """Run the checks and write both reports.
 
-    Returns 0 when clean, 1 if any error-severity issue is found, 2 for bad input.
+    Returns 0 when clean, 1 if any error-severity issue is found, 2 for bad input, and 3 when the data
+    is clean but the HTML report could not be written.
     """
     args = parse_args(argv)
     try:
@@ -59,16 +64,29 @@ def main(argv: list[str] | None = None) -> int:
     # Checks run outside the try: run_all isolates their crashes as check_crashed issues.
     issues = run_all(raw, df, rules)
     summary = summarise(issues)
-    out = settings.period_output_dir(period) / REPORT_NAME
-    write_report(out, summary, issues, fund_metrics(df))
+    out_dir = settings.period_output_dir(period)
+    write_report(out_dir / REPORT_NAME, summary, issues, fund_metrics(df))
+    # The HTML report is presentation: a bug there must not hide the Excel results or look like a
+    # data-quality failure, so it is isolated here at the app boundary.
+    html_ok = True
+    try:
+        report = build_report(raw, df, issues, summary, rules, period.label, src.name)
+        write_html(out_dir / HTML_NAME, report)
+    except Exception as exc:  # noqa: BLE001
+        html_ok = False
+        traceback.print_exc()
+        print(f"HTML report failed: {exc!r}", file=sys.stderr)
 
     counts = issues["severity"].value_counts().reindex(["error", "warning", "info"], fill_value=0)
     print(f"Period: {period.label}  Input: {src}")
     print(f"Rows: {len(df):,}  Funds: {df['fund'].nunique()}  Checks: {len(summary)}")
     print(f"Issues -> errors: {counts['error']}  warnings: {counts['warning']}  info: {counts['info']}")
     print(summary[summary["status"] != "PASS"].to_string(index=False))
-    print(f"Report written to {out}")
-    return 1 if counts["error"] else 0
+    written = [REPORT_NAME] + ([HTML_NAME] if html_ok else [])
+    print(f"Reports written to {out_dir}: {', '.join(written)}")
+    if counts["error"]:
+        return 1
+    return 0 if html_ok else 3
 
 
 if __name__ == "__main__":

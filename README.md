@@ -13,7 +13,7 @@ pip install -r requirements-dev.txt    # plus pytest, ruff and mypy
 
 ## Usage
 
-Run all checks for a quarter and write an Excel report. The period is required; it can be written as `"Q2 2026"`, `2026Q2`, `"2026 Q2"` or `Q2-2026` (case-insensitive).
+Run all checks for a quarter and write an Excel report and an HTML management report. The period is required; it can be written as `"Q2 2026"`, `2026Q2`, `"2026 Q2"` or `Q2-2026` (case-insensitive).
 
 ```
 python app/run_dq.py "Q2 2026"
@@ -22,9 +22,12 @@ python app/run_dq.py 2026Q2 --input data/<extract>.xlsx --settings config/settin
 
 The extract is looked up as `<data_dir>/<input_pattern>` (by default `data/Custom_RE_Extract_2026Q2.xlsx`) and read from its `KPI` sheet. `--input` overrides the file only; the period still sets the expected reporting date (the quarter end) and the output folder. `--settings` points at another settings file (default `config/settings.yaml`). The input data is not part of the repository.
 
-The report is written to `output/<period code>/dq_report.xlsx`, e.g. `output/2026Q2/`. It has three sheets: Summary (one row per check with PASS / INFO / FLAG), Issues (one row per finding with severity, fund, datapoint and Excel row) and Fund Metrics.
+Two files are written to `output/<period code>/`, e.g. `output/2026Q2/`:
 
-Exit codes: 0 clean, 1 if any error-severity issue is found, 2 for a bad period, bad settings, or a missing or unreadable file.
+- `dq_report.xlsx` has three sheets: Summary (one row per check with PASS / INFO / FLAG), Issues (one row per finding with severity, fund, datapoint and Excel row) and Fund Metrics.
+- `dq_management_report.html` is a self-contained management report generated from the data (no external requests, light and dark themes). It shows a verdict (red "Not ready" if there are errors; amber if there are warnings or findings that block totals across funds, such as multiple currencies; green otherwise), key figures, ranked findings, a filterable register rating each datapoint (Ready / Use with care / Not usable / Empty) and a check-group summary. Findings appear only when they apply.
+
+Exit codes: 0 clean, 1 if any error-severity issue is found, 2 for a bad period, bad settings, or a missing or unreadable file, 3 if the data is clean but the HTML report failed (the Excel report is still written).
 
 ## Checks
 
@@ -44,7 +47,7 @@ A check that crashes is reported as `check_crashed` and does not stop the others
 
 `config/settings.yaml` holds `data_dir`, `output_dir`, `rules_file` (relative paths resolve against the project root, absolute paths are used as is) and `input_pattern` (default `Custom_RE_Extract_{period}.xlsx`, where `{period}` is the period code such as `2026Q2`).
 
-`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, allowed vocabularies, plausibility bounds, `expected_fund_count` and the forward-looking calendars. It has no `reporting_date`: the CLI sets it to the quarter end of the period.
+`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, allowed vocabularies, plausibility bounds, `expected_fund_count` and the forward-looking calendars. Its `report:` section (all keys required) tunes the HTML report: `ltv_headroom`, `exact_rel_tol`, `exact_share_tol`, `anonymised_label_pattern`, `reconcile_sample` and `empty_field_notes`. It has no `reporting_date`: the CLI sets it to the quarter end of the period.
 
 ## Rolling to a new quarter
 
@@ -71,6 +74,8 @@ src/custom_re/
   loader.py     read and tidy the extract, fund_info_wide
   checks.py     named checks, run_all, summarise, fund_metrics
   report.py     Excel report writer
+  insights.py   build_report: verdict, findings and datapoint register (ReportData)
+  html_report.py  render_html, write_html: the HTML management report
   settings.py   Period parsing and settings loading
 app/run_dq.py   command-line entry point
 config/         settings.yaml, dq_rules.yaml

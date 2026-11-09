@@ -130,3 +130,21 @@ outlier_metrics:
   - nav_to_gav
   - fees_to_gav
   - bad_debt_to_gav
+
+# Management HTML report: thresholds and wording that are business knowledge, not code.
+report:
+  ltv_headroom: 0.05              # LTV within this of its cap is called out
+  exact_rel_tol: 1.0e-9           # amounts: "derived, not reported" test for exact agreement
+  exact_share_tol: 1.0e-4         # shares: agreement within 0.01 points, allowing for rounding
+  anonymised_label_pattern: '^Country \d+$'
+  reconcile_sample: 3 to 5        # funds to reconcile against manager reports
+  # Source columns that are expected to be empty, with what their absence means.
+  empty_field_notes:
+    Scenario: Actual and forecast values cannot be told apart.
+    Version: Restatements cannot be told apart.
+    Period: Frequency has to be inferred from dates.
+    Reporting Period: The reporting date is populated and used instead.
+    Region: Geography comes from the exposure records instead.
+    Nature: ""
+    Analysis4: Analysis 1 to 3 carry all dimensions.
+    Value Memo: No commentary is supplied with any value.
