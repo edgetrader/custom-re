@@ -44,7 +44,7 @@ def test_valid_fixture_has_no_errors_or_warnings(raw, rules):
         (lambda r: _set(r, "Fund A", "Country Percentage", 0.5, a1="Country 01"), "sum_to_one"),
         (lambda r: _set(r, "Fund A", "Cash & Near Cash", 0.2), "sum_to_one"),
         (lambda r: _set(r, "Fund A", "Region Level 2", "Mars", "Value String", a1="Country 01"),
-         "label_not_allowed"),
+         "exposure_members_mismatch"),
         (lambda r: _set(r, "Fund A", "Region Level 1", "Oceania", "Value String", a1="Country 01"),
          "exposure_members_mismatch"),
         (lambda r: _set(r, "Fund A", "Fund GAV", "x", "Analysis4"), "unused_column_populated"),
@@ -353,3 +353,22 @@ def test_duplicate_label_is_found_by_value_string(raw, rules):
     issues = _issues(raw, rules)
     dups = issues[issues["check"] == "duplicate_key"]
     assert set(dups["datapoint"]) == {"Country"} and len(dups) == 2
+
+
+def test_new_region_and_sector_labels_are_accepted(raw, rules):
+    """There is no allowed list: a new continent or sector is fine if labels, shares and mappings agree."""
+    renames = [
+        ("Region Level 2", "Value String", "Europe", "Middle East"),
+        ("Country Percentage", "Analysis3", "Europe", "Middle East"),
+        ("Sector - level 1", "Value String", "Office", "Workspace"),
+        ("Portfolio sector percentage (by GAV) - total portfolio Sector Level 1", "Analysis1", "Office",
+         "Workspace"),
+        ("Average occupancy rate (%) - completed assets Sector Level 1", "Analysis1", "Office", "Workspace"),
+        ("Portfolio sector percentage (by GAV) - total portfolio", "Analysis2", "Office", "Workspace"),
+        ("Average occupancy rate (%) - completed assets Sector Level 2", "Analysis2", "Office", "Workspace"),
+    ]
+    for dp, col, old, new in renames:
+        mask = (raw["Datapoint.Name"] == dp) & (raw[col] == old)
+        assert mask.any(), (dp, col, old)
+        raw.loc[mask, col] = new
+    assert _flags(raw, rules) == set()

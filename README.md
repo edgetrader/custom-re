@@ -37,12 +37,12 @@ Exit codes: 0 clean, 1 if any error-severity issue is found, 2 for a bad period,
 
 ## Checks
 
-The checks live in `src/custom_re/checks.py`; `CHECK_GROUPS` is the registry of all 47 check names. They are grouped as:
+The checks live in `src/custom_re/checks.py`; `CHECK_GROUPS` is the registry of all 46 check names. They are grouped as:
 
 - structure: reporting date, blank keys, fund count, unknown datapoints, datapoints missing everywhere
 - completeness: per-fund datapoint counts, datapoints not reported or without a value (info), time-series gaps for funds that report the series, projection frequency, exposure members, value field used
 - uniqueness: duplicate keys
-- validity: currencies, fractions in [0, 1], non-negative amounts, plausible IRR, allowed labels
+- validity: currencies, fractions in [0, 1], non-negative amounts, plausible IRR
 - consistency: mixes sum to 100%, sector roll-ups, region hierarchy, GAV-weighted occupancy
 - business: GAV/NAV/LTV relationships, lifecycle split, debt maturities vs LTV x GAV, fees, bad debts, date order
 - outlier: cross-fund IQR outliers
@@ -66,7 +66,7 @@ A check that crashes is reported as `check_crashed` and does not stop the others
 
 `config/settings.yaml` holds `data_dir`, `output_dir`, `rules_file` (relative paths resolve against the project root, absolute paths are used as is) and `input_pattern` (default `Custom_RE_Extract_{period}.xlsx`, where `{period}` is the period code such as `2026Q2`) and `reference_file` (required; relative or full path to the GP reference workbook).
 
-`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, allowed vocabularies, `none_when_missing`, `scheduled_amounts`, plausibility bounds, the step 3 `usability` thresholds and the forward-looking calendars. Its `completeness_bands` list (`label`, `above`; the last has `above: null`) sets the step 2 bands. Its `report:` section (all keys required) holds `exact_rel_tol` and `anonymised_label_pattern`, used for the step 3 notes. It has no `reporting_date` or `expected_fund_count`: the CLI sets them to the quarter end of the period and to the number of funds in the GP reference.
+`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, `none_when_missing`, `scheduled_amounts`, plausibility bounds, the step 3 `usability` thresholds and the forward-looking calendars. Its `completeness_bands` list (`label`, `above`; the last has `above: null`) sets the step 2 bands. Its `report:` section (all keys required) holds `exact_rel_tol` and `anonymised_label_pattern`, used for the step 3 notes. It has no `reporting_date` or `expected_fund_count`: the CLI sets them to the quarter end of the period and to the number of funds in the GP reference.
 
 ## Rolling to a new quarter
 

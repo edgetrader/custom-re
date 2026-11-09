@@ -136,10 +136,6 @@ irr_bounds: [-0.5, 0.5]
 max_bad_debt_to_gav: 0.01
 max_fees_to_gav: 0.15
 
-# Allowed labels.
-region_continents: [Americas, Asia Pacific, Europe]
-sector_level1: [Industrial, Office, Others, Residential, Retail]
-
 # Fund-life dates must be in this order (each pair: earlier <= later).
 date_order:
   - [Fund inception date, Start of fund term]

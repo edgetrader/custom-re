@@ -49,7 +49,6 @@ CHECK_GROUPS = {
     "fraction_out_of_range": "validity",
     "negative_amount": "validity",
     "irr_implausible": "validity",
-    "label_not_allowed": "validity",
     "sum_to_one": "consistency",
     "sector_rollup": "consistency",
     "hierarchy_conflict": "consistency",
@@ -465,25 +464,6 @@ def check_ranges(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     return _frame(out)
 
 
-def check_labels(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Labels use the allowed vocabularies."""
-    out = []
-    vocab_checks = [
-        (REGION_L2, "value_str", rules["region_continents"]),
-        (SECTOR_L1, "value_str", rules["sector_level1"]),
-        (SECTOR_PCT_L1, "a1", rules["sector_level1"]),
-        (OCC_L1, "a1", rules["sector_level1"]),
-    ]
-    for dp, col, vocab in vocab_checks:
-        rows = _dp(df, dp)
-
-        def bad_label_msg(r: pd.Series, col: str = col) -> str:
-            return f"{r[col]!r} not in allowed list"
-
-        out += _row_issues(rows[~rows[col].isin(vocab)], "label_not_allowed", "error", bad_label_msg)
-    return _frame(out)
-
-
 # ---------------------------------------------------------------- consistency
 
 
@@ -794,7 +774,6 @@ def run_all(raw: pd.DataFrame, df: pd.DataFrame, rules: Rules, reference: pd.Dat
         ("check_duplicate_keys", lambda: check_duplicate_keys(df)),
         ("check_currency", lambda: check_currency(df, rules)),
         ("check_ranges", lambda: check_ranges(df, rules)),
-        ("check_labels", lambda: check_labels(df, rules)),
         ("check_sums_to_one", lambda: check_sums_to_one(df, rules)),
         ("check_sector_rollup", lambda: check_sector_rollup(df, rules)),
         ("check_hierarchies", lambda: check_hierarchies(df)),
