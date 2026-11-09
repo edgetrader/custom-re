@@ -4,11 +4,11 @@ Data quality checks (and, later, analysis) for the Custom RE quarterly KPI extra
 
 ## Setup
 
-Requires Python 3.11+ and pandas 3.0+. The editable install is required because `app/` imports the `custom_re` package.
+Requires Python 3.11+ and pandas 3.0+. Activate the Python environment you want to use (venv, conda, ...), then install the project once from the project root. The editable install is required because `app/` imports the `custom_re` package; without it you get `ModuleNotFoundError: No module named 'custom_re'`.
 
 ```
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+pip install -e .            # run only
+pip install -e ".[dev]"     # plus pytest, ruff and mypy
 ```
 
 ## Usage
@@ -16,8 +16,8 @@ python3 -m venv .venv
 Run all checks for a quarter and write an Excel report. The period is required; it can be written as `"Q2 2026"`, `2026Q2`, `"2026 Q2"` or `Q2-2026` (case-insensitive).
 
 ```
-.venv/bin/python app/run_dq.py "Q2 2026"
-.venv/bin/python app/run_dq.py 2026Q2 --input data/<extract>.xlsx --settings config/settings.yaml
+python app/run_dq.py "Q2 2026"
+python app/run_dq.py 2026Q2 --input data/<extract>.xlsx --settings config/settings.yaml
 ```
 
 The extract is looked up as `<data_dir>/<input_pattern>` (by default `data/Custom_RE_Extract_2026Q2.xlsx`) and read from its `KPI` sheet. `--input` overrides the file only; the period still sets the expected reporting date (the quarter end) and the output folder. `--settings` points at another settings file (default `config/settings.yaml`). The input data is not part of the repository.
@@ -49,15 +49,17 @@ A check that crashes is reported as `check_crashed` and does not stop the others
 ## Rolling to a new quarter
 
 1. Put the new extract in `data/`, named according to `input_pattern`.
-2. Run `.venv/bin/python app/run_dq.py "<period>"`. Running the wrong file for a period raises reporting_date errors.
+2. Run `python app/run_dq.py "<period>"`. Running the wrong file for a period raises reporting_date errors.
 3. Review `projection_calendars` (`freq`, `periods`, `skip`), `debt_maturity_calendar` and `expected_fund_count` in `config/dq_rules.yaml` against the new extract.
 
 ## Tests and lint
 
+Requires the dev install.
+
 ```
-.venv/bin/pytest
-.venv/bin/ruff check .
-.venv/bin/mypy src app
+pytest
+ruff check .
+mypy src app
 ```
 
 The tests use a synthetic two-fund fixture with fault injection.
