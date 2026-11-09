@@ -6,12 +6,17 @@ import argparse
 import sys
 from pathlib import Path
 
-from custom_re.checks import fund_metrics, run_all, summarise
-from custom_re.loader import load_rules, read_raw, tidy
-from custom_re.report import write_report
-from custom_re.settings import load_settings, parse_period
-
 ROOT = Path(__file__).resolve().parents[1]
+
+# Run straight from a checkout: put src/ on the import path so custom_re does not need installing.
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+from custom_re.checks import fund_metrics, run_all, summarise  # noqa: E402
+from custom_re.loader import load_rules, read_raw, tidy  # noqa: E402
+from custom_re.report import write_report  # noqa: E402
+from custom_re.settings import load_settings, parse_period  # noqa: E402
+
 DEFAULT_SETTINGS = ROOT / "config" / "settings.yaml"
 REPORT_NAME = "dq_report.xlsx"
 

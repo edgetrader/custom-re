@@ -1,0 +1,4 @@
+# Runtime dependencies; custom_re itself runs from src/ without installing.
+pandas>=3.0
+openpyxl>=3.1
+pyyaml>=6.0

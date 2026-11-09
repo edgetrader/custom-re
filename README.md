@@ -4,11 +4,11 @@ Data quality checks (and, later, analysis) for the Custom RE quarterly KPI extra
 
 ## Setup
 
-Requires Python 3.11+ and pandas 3.0+. Activate the Python environment you want to use (venv, conda, ...), then install the project once from the project root. The editable install is required because `app/` imports the `custom_re` package; without it you get `ModuleNotFoundError: No module named 'custom_re'`.
+Requires Python 3.11+ and pandas 3.0+. The `custom_re` package is not installed: `app/run_dq.py` and the tests load it straight from `src/`. Activate the Python environment you want to use and install only the third-party dependencies:
 
 ```
-pip install -e .            # run only
-pip install -e ".[dev]"     # plus pytest, ruff and mypy
+pip install -r requirements.txt        # run only
+pip install -r requirements-dev.txt    # plus pytest, ruff and mypy
 ```
 
 ## Usage
@@ -54,7 +54,7 @@ A check that crashes is reported as `check_crashed` and does not stop the others
 
 ## Tests and lint
 
-Requires the dev install.
+Requires `requirements-dev.txt`. Run from the project root.
 
 ```
 pytest

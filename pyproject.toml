@@ -21,7 +21,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# src for custom_re, "." for app/; no install needed to run the tests.
+pythonpath = ["src", "."]
 
 [tool.ruff]
 line-length = 110
@@ -37,3 +38,4 @@ ignore = ["D203", "D213"]
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
+mypy_path = "src"
