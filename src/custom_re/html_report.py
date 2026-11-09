@@ -1,4 +1,4 @@
-"""Render the one-quarter data quality report (summary, steps, actions) as a self-contained HTML page."""
+"""Render the one-quarter data quality report (summary and the three steps) as a self-contained HTML page."""
 
 from __future__ import annotations
 
@@ -57,7 +57,6 @@ details summary{cursor:pointer;white-space:nowrap}details[open] summary{margin-b
 .detail>div+div{margin-top:6px}ul.why{margin:2px 0 0;padding-left:18px}ul.why li{margin:2px 0}
 td.usable{width:34%}td.detail{min-width:340px}
 .funds{display:flex;flex-wrap:wrap;gap:2px 14px;font-size:13px;color:var(--ink)}
-ol.actions{margin:8px 0 0;padding-left:22px;max-width:120ch}ol.actions li{margin:6px 0}
 footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 @media print{body{background:#fff}section{break-inside:avoid}}
 """
@@ -184,12 +183,6 @@ def _step3(d: ReportData) -> str:
     return head + f"<p>{counts}</p>" + table + "</section>"
 
 
-def _actions(d: ReportData) -> str:
-    body = ("".join(f"<li>{_e(a)}</li>" for a in d.actions) if d.actions
-            else "<li>None: no fund, datapoint or value needs following up.</li>")
-    return f'<section id="actions"><h2>Actions for managers</h2><ol class="actions">{body}</ol></section>'
-
-
 def render_html(d: ReportData, generated: pd.Timestamp) -> str:
     """Full HTML document for one quarter's report."""
     title = f"Custom RE {d.period_label} Data Quality"
@@ -202,7 +195,7 @@ def render_html(d: ReportData, generated: pd.Timestamp) -> str:
         f'checks: {plural(d.counts["error"], "error")}, {plural(d.counts["warning"], "warning")} · generated '
         f'{generated:%d %b %Y %H:%M}</p>'
         f'<p class="summary" id="summary">{_e(d.summary)}</p>'
-        f"{_step1(d)}{_step2(d)}{_step3(d)}{_actions(d)}"
+        f"{_step1(d)}{_step2(d)}{_step3(d)}"
         "<footer>Full detail (every check result, per fund ratings and notes) is in "
         "<code>dq_report.xlsx</code> in the same folder.</footer></main></body></html>"
     )
