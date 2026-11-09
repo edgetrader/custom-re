@@ -13,16 +13,18 @@ python3 -m venv .venv
 
 ## Usage
 
-Run all checks and write an Excel report:
+Run all checks for a quarter and write an Excel report. The period is required; it can be written as `"Q2 2026"`, `2026Q2`, `"2026 Q2"` or `Q2-2026` (case-insensitive).
 
 ```
-.venv/bin/python app/run_dq.py
-.venv/bin/python app/run_dq.py --input data/<extract>.xlsx --rules config/dq_rules.yaml --output output/dq_report.xlsx
+.venv/bin/python app/run_dq.py "Q2 2026"
+.venv/bin/python app/run_dq.py 2026Q2 --input data/<extract>.xlsx --settings config/settings.yaml
 ```
 
-Defaults: input `data/Custom_RE_Extract_2026Q2.xlsx`, rules `config/dq_rules.yaml`, output `output/dq_report.xlsx`. The extract is read from its `KPI` sheet. The input data is not part of the repository.
+The extract is looked up as `<data_dir>/<input_pattern>` (by default `data/Custom_RE_Extract_2026Q2.xlsx`) and read from its `KPI` sheet. `--input` overrides the file only; the period still sets the expected reporting date (the quarter end) and the output folder. `--settings` points at another settings file (default `config/settings.yaml`). The input data is not part of the repository.
 
-The report workbook has three sheets: Summary (one row per check with PASS / INFO / FLAG), Issues (one row per finding with severity, fund, datapoint and Excel row) and Fund Metrics. The process exits with code 1 if any error-severity issue is found.
+The report is written to `output/<period code>/dq_report.xlsx`, e.g. `output/2026Q2/`. It has three sheets: Summary (one row per check with PASS / INFO / FLAG), Issues (one row per finding with severity, fund, datapoint and Excel row) and Fund Metrics.
+
+Exit codes: 0 clean, 1 if any error-severity issue is found, 2 for a bad period, bad settings, or a missing or unreadable file.
 
 ## Checks
 
@@ -40,13 +42,15 @@ A check that crashes is reported as `check_crashed` and does not stop the others
 
 ## Configuration
 
-`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, allowed vocabularies, plausibility bounds, `expected_fund_count` and the forward-looking calendars.
+`config/settings.yaml` holds `data_dir`, `output_dir`, `rules_file` (relative paths resolve against the project root, absolute paths are used as is) and `input_pattern` (default `Custom_RE_Extract_{period}.xlsx`, where `{period}` is the period code such as `2026Q2`).
+
+`config/dq_rules.yaml` holds the datapoint catalogue (with the expected value field: num, date or str), tolerances, allowed vocabularies, plausibility bounds, `expected_fund_count` and the forward-looking calendars. It has no `reporting_date`: the CLI sets it to the quarter end of the period.
 
 ## Rolling to a new quarter
 
-1. Update `reporting_date` in `config/dq_rules.yaml`. The debt maturity and projection calendars are derived from it.
-2. Review `projection_calendars` (`freq`, `periods`, `skip`) and `debt_maturity_calendar` against the new extract, and `expected_fund_count`.
-3. Pass the new file with `--input`, or change the default in `app/run_dq.py`.
+1. Put the new extract in `data/`, named according to `input_pattern`.
+2. Run `.venv/bin/python app/run_dq.py "<period>"`. Running the wrong file for a period raises reporting_date errors.
+3. Review `projection_calendars` (`freq`, `periods`, `skip`), `debt_maturity_calendar` and `expected_fund_count` in `config/dq_rules.yaml` against the new extract.
 
 ## Tests and lint
 
@@ -65,8 +69,9 @@ src/custom_re/
   loader.py     read and tidy the extract, fund_info_wide
   checks.py     named checks, run_all, summarise, fund_metrics
   report.py     Excel report writer
+  settings.py   Period parsing and settings loading
 app/run_dq.py   command-line entry point
-config/         dq_rules.yaml
+config/         settings.yaml, dq_rules.yaml
 tests/          pytest suite
 notebooks/      exploration
 docs/

@@ -1,7 +1,8 @@
 # Data quality rules for the Custom RE quarterly KPI extract.
 # Tolerances are absolute (fractions, e.g. 0.005 = 0.5 percentage points).
 
-reporting_date: "2026-06-30"
+# reporting_date is not set here: app/run_dq.py derives it from the period argument
+# (quarter end), so this file does not change each quarter.
 
 # The fund universe expected in each extract.
 expected_fund_count: 60

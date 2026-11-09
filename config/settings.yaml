@@ -1,0 +1,9 @@
+# Where the DQ app finds extracts and writes reports.
+# Relative paths are resolved against the project root; absolute paths are used as is.
+
+data_dir: data
+output_dir: output
+rules_file: config/dq_rules.yaml
+
+# Extract file name for a period. {period} becomes the period code, e.g. 2026Q2.
+input_pattern: "Custom_RE_Extract_{period}.xlsx"

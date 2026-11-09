@@ -117,6 +117,7 @@ def rules() -> dict[str, Any]:
     """The project's real DQ rules, sized for the two-fund fixture."""
     rules = load_rules(ROOT / "config" / "dq_rules.yaml")
     rules["expected_fund_count"] = 2
+    rules["reporting_date"] = REPORT.date().isoformat()  # normally set by the CLI from the period
     return rules
 
 

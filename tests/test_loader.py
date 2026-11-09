@@ -47,6 +47,10 @@ def test_tidy_coerces_bad_dates_to_nat_and_keeps_number_text(raw):
     assert df["value_num_text"].notna().sum() == 1
 
 
-def test_load_rules_reads_yaml(rules):
-    assert rules["reporting_date"] == "2026-06-30"
+def test_load_rules_reads_yaml():
+    from custom_re.loader import load_rules
+    from tests.conftest import ROOT
+
+    rules = load_rules(ROOT / "config" / "dq_rules.yaml")
     assert "Fund Info" in rules["datapoints"]
+    assert "reporting_date" not in rules  # derived from the period by the CLI
