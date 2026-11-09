@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from custom_re.checks import CHECK_GROUPS, calendar
+from custom_re.completeness import datapoint_completeness, fund_completeness
 from custom_re.loader import RENAME, fund_info_wide
 
 Rules = dict[str, Any]
@@ -91,6 +92,9 @@ class ReportData:
     flagged: pd.DataFrame  # non-PASS checks with an example detail
     counts: dict[str, int]  # issues by severity
     unassigned_errors: int  # errors not tied to one datapoint, so not reflected in register ratings
+    fund_completeness: pd.DataFrame  # one row per fund, most complete first
+    datapoint_completeness: pd.DataFrame  # one row per datapoint, most complete first
+    top_n: int  # funds shown as most and least complete
 
 
 # ---------------------------------------------------------------- formatting
@@ -214,7 +218,8 @@ def datapoint_register(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame
             if vals.empty:
                 continue
             if dp in amounts and n_ccy > 1:
-                row.flag(CARE, "Local currency: convert before totals or rankings.")
+                # One currency per fund is by design: fine per fund, so a note, not a lower rating.
+                row.notes.append("In the fund's own currency; compare funds by ratios, not totals.")
             if dp in amounts:
                 zeros = int((vals == 0).sum())
                 if category in SERIES_CATEGORIES and zeros:
@@ -270,7 +275,7 @@ def datapoint_register(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame
     # Series caveats: mixed projection calendars and a debt schedule derived from LTV x GAV.
     if mix:
         for dp in (CALLS, DISTS):
-            note(dp, "Monthly or quarterly depending on the fund: align before adding up.", CARE)
+            note(dp, "Monthly or quarterly depending on the fund: compare funds by quarter.")
     if _exact_debt(df, w, cfg):
         note(DEBT, f"Totals equal LTV × GAV exactly for all {n_funds} funds: likely derived.")
 
@@ -343,15 +348,20 @@ def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: R
             "Correct at source and rerun. Every item, with its Excel row, is listed in dq_report.xlsx.",
         ))
 
-    # Amounts in several currencies cannot be totalled.
-    ccy = df.groupby("fund")["currency"].first().value_counts()
-    if len(ccy) > 1:
-        listed = ", ".join(f"{c} ({n})" for c, n in ccy.items())
+    # Datapoints a fund reports, but only ever as zero. Absent datapoints are check errors instead.
+    fc = fund_completeness(df, rules)
+    dc = datapoint_completeness(df, rules)
+    zero_funds = fc[fc["zero_datapoints"] != ""]
+    zero_dps = (dc.set_index("datapoint")["funds_reporting"] - dc.set_index("datapoint")["funds_with_value"])
+    zero_dps = zero_dps[zero_dps > 0].sort_values(ascending=False, kind="stable")
+    if len(zero_funds):
+        listed = ", ".join(f"{dp} ({_plural(int(n), 'fund')})" for dp, n in zero_dps.items())
         out.append(Finding(
-            f"Amounts are in {len(ccy)} local currencies", "bad", "Blocks totals",
-            f"Each fund reports in its own currency: {listed}. GAV, NAV, fees, debt maturities and "
-            "cash-flow projections cannot be added up or ranked across funds until converted.",
-            f"Confirm the base currency and supply FX rates as at {report:%d %B %Y}.",
+            f"{_plural(len(zero_funds), 'fund')} report some datapoints only as zero", "info",
+            "Confirm meaning",
+            f"Reported as zero in every record: {listed}. A zero can be genuine (no development, no carry "
+            "earned yet, no calls planned) or a placeholder for 'not reported'.",
+            "Ask managers to confirm that zero means none for these datapoints.",
         ))
 
     # Funds past their stated term.
@@ -401,9 +411,9 @@ def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: R
                 skipped = calendar(report, {**spec, "periods": spec["skip"], "skip": 0})
                 gaps.append(f" The {name} calendar skips {', '.join(f'{d:%B %Y}' for d in skipped)}.")
         out.append(Finding(
-            "Cash-flow projections use different calendars", "warn", "Needs alignment",
+            "Cash-flow projections use different calendars", "info", "Timing differs",
             "; ".join(parts) + "." + "".join(gaps),
-            "Add projections up by quarter for portfolio views, and confirm any skipped month is by design.",
+            "Compare funds' projections by quarter, and confirm any skipped month is by design.",
         ))
 
     # Empty source fields.
@@ -499,6 +509,9 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
     n_pass = int((summary["status"] != "FLAG").sum())
     n_ccy = df.groupby("fund")["currency"].first().nunique()
     full = sum(r.total > 0 and r.coverage == r.total for r in register if r.rating != EMPTY)
+    fc = fund_completeness(df, rules)
+    dc = datapoint_completeness(df, rules)
+    n_all_valued = int((fc["datapoints_with_value"] == fc["datapoints_total"]).sum())
 
     blockers = [f.title.lower() for f in found if f.tone in ("bad", "warn")]
     if counts["error"]:
@@ -508,17 +521,17 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
         tone = "warn"
         verdict = f"Usable with caveats: {_plural(counts['warning'], 'warning')} need review."
     elif blockers:
-        # Clean checks, but findings still stop figures being combined across funds.
+        # Clean checks, but some findings need confirming before the affected funds are relied on.
         tone = "warn"
-        verdict = "Complete and consistent: fit for fund-by-fund reporting, not yet for totals across funds."
+        verdict = f"Complete and consistent, with {_plural(len(blockers), 'point')} to confirm with managers."
     else:
         tone = "good"
-        verdict = "Complete and internally consistent. Fit for fund-by-fund and cross-fund reporting."
+        verdict = "Complete and internally consistent. Fit for fund-level reporting and comparison."
     detail = (f"{n_pass} of {len(summary)} automated checks passed, with {_plural(counts['error'], 'error')} "
               f"and {_plural(counts['warning'], 'warning')}. {full} of {len(catalogue)} datapoints are "
               f"filled for all {n_funds} funds.")
     if blockers:
-        detail += " Before figures are combined across funds, resolve: " + "; ".join(blockers) + "."
+        detail += " To confirm: " + "; ".join(blockers) + "."
 
     flagged = summary[summary["status"] != "PASS"].copy()
     first_detail = issues.groupby("check", observed=True)["detail"].first()
@@ -532,10 +545,12 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
         (f"{n_funds}", f"funds (expected {rules['expected_fund_count']})"),
         (f"{len(catalogue)}", f"datapoints in {len(rules['datapoints'])} categories"),
         (f"{n_pass} / {len(summary)}", "checks passed"),
-        (f"{n_ccy}", "reporting currencies"),
+        (f"{n_ccy}", "currencies, one per fund"),
+        (f"{n_all_valued} / {n_funds}", f"funds with a value in all {len(catalogue)} datapoints"),
     ]
     return ReportData(period_label, report, source_name, tone, verdict, detail, figures, register, found,
-                      _check_groups(summary), flagged, counts, unassigned)
+                      _check_groups(summary), flagged, counts, unassigned, fc, dc,
+                      int(rules["report"]["completeness_top_n"]))
 
 
 def ratings_count(rows: list[DatapointUsability]) -> dict[str, int]:

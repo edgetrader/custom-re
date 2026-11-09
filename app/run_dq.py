@@ -14,6 +14,7 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from custom_re.checks import fund_metrics, run_all, summarise  # noqa: E402
+from custom_re.completeness import datapoint_completeness, fund_completeness  # noqa: E402
 from custom_re.html_report import write_html  # noqa: E402
 from custom_re.insights import build_report  # noqa: E402
 from custom_re.loader import load_rules, read_raw, tidy  # noqa: E402
@@ -65,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     issues = run_all(raw, df, rules)
     summary = summarise(issues)
     out_dir = settings.period_output_dir(period)
-    write_report(out_dir / REPORT_NAME, summary, issues, fund_metrics(df))
+    fc, dc = fund_completeness(df, rules), datapoint_completeness(df, rules)
+    write_report(out_dir / REPORT_NAME, summary, issues, fund_metrics(df),
+                 {"Fund Completeness": fc, "Datapoint Completeness": dc})
     # The HTML report is presentation: a bug there must not hide the Excel results or look like a
     # data-quality failure, so it is isolated here at the app boundary.
     html_ok = True
@@ -82,6 +85,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Rows: {len(df):,}  Funds: {df['fund'].nunique()}  Checks: {len(summary)}")
     print(f"Issues -> errors: {counts['error']}  warnings: {counts['warning']}  info: {counts['info']}")
     print(summary[summary["status"] != "PASS"].to_string(index=False))
+    if len(fc):
+        total = int(fc["datapoints_total"].iloc[0])
+        print(f"Completeness: {int((fc['datapoints_with_value'] == total).sum())} of {len(fc)} funds have a "
+              f"non-zero value in all {total} datapoints; lowest {int(fc['datapoints_with_value'].min())}.")
     written = [REPORT_NAME] + ([HTML_NAME] if html_ok else [])
     print(f"Reports written to {out_dir}: {', '.join(written)}")
     if counts["error"]:

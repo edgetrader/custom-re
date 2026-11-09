@@ -80,6 +80,8 @@ def test_main_reads_period_file_and_writes_period_folder(raw, tmp_path):
     assert main(["Q2 2026", "--settings", str(_settings(tmp_path))]) == 1
     assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
     assert (tmp_path / "out" / "2026Q2" / "dq_management_report.html").exists()
+    sheets = openpyxl.load_workbook(tmp_path / "out" / "2026Q2" / "dq_report.xlsx").sheetnames
+    assert sheets[-2:] == ["Fund Completeness", "Datapoint Completeness"]
 
 
 def test_main_flags_extract_from_wrong_quarter(raw, tmp_path):

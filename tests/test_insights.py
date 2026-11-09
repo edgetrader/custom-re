@@ -37,12 +37,11 @@ def test_fmt_pct_uses_true_minus():
     assert fmt_pct(-0.0001) == "0.0%"
 
 
-def test_clean_checks_with_blocking_findings_are_amber(raw, rules):
+def test_clean_fixture_is_green(raw, rules):
     rep = _report(raw, rules)
-    # No errors or warnings, but the calendar mix still blocks cross-fund totals.
+    # Calendar mix and the other caveats are information only; nothing needs confirming.
     assert rep.counts["error"] == rep.counts["warning"] == 0
-    assert rep.verdict_tone == "warn"
-    assert "not yet for totals" in rep.verdict
+    assert rep.verdict_tone == "good"
     titles = " | ".join(_titles(rep))
     # Fixture: one monthly and one quarterly fund, investment period ended in 2021 with calls projected,
     # anonymised countries, empty export columns and debt exactly LTV x GAV.
@@ -54,7 +53,15 @@ def test_clean_checks_with_blocking_findings_are_amber(raw, rules):
     assert "currencies" not in titles and "past the stated end" not in titles
     assert _rating(rep, "Fund LTV (current)").rating == READY
     assert _rating(rep, "Country").rating == CARE
-    assert _rating(rep, "Capital call amount").rating == CARE
+    assert _rating(rep, "Capital call amount").rating == READY  # mixed calendars: a note only
+
+
+def test_fund_past_term_turns_verdict_amber(raw, rules):
+    mask = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "End of fund term")
+    raw.loc[mask, "Value Date"] = pd.Timestamp("2025-06-30")
+    rep = _report(raw, rules)
+    assert rep.verdict_tone == "warn"
+    assert "1 point to confirm" in rep.verdict
 
 
 def test_empty_source_fields_listed_with_configured_notes(raw, rules):
@@ -65,12 +72,14 @@ def test_empty_source_fields_listed_with_configured_notes(raw, rules):
     assert empty["Scenario"].notes == [rules["report"]["empty_field_notes"]["Scenario"]]
 
 
-def test_multiple_currencies_block_totals(raw, rules):
+def test_one_currency_per_fund_is_expected(raw, rules):
+    # Funds reporting in different currencies is by design: no finding, no lower rating.
     raw.loc[raw["Company"] == "Fund B", "Currency"] = "EUR"
     rep = _report(raw, rules)
-    assert rep.findings[0].title == "Amounts are in 2 local currencies"
-    assert rep.findings[0].tone == "bad"
-    assert _rating(rep, "Fund GAV").rating == CARE
+    assert not any("currenc" in f.title for f in rep.findings)
+    assert rep.verdict_tone == "good"
+    gav = _rating(rep, "Fund GAV")
+    assert gav.rating == READY and any("own currency" in n for n in gav.notes)
 
 
 def test_fund_past_term_is_reported(raw, rules):
@@ -120,3 +129,18 @@ def test_exactness_claim_needs_every_fund(raw, rules):
     raw = raw[~((raw["Company"] == "Fund B") & (raw["Datapoint.Name"] == "Debt maturity value"))]
     rep = _report(raw.reset_index(drop=True), rules)
     assert "unusually exact" not in " | ".join(_titles(rep))
+
+
+def test_zero_only_datapoints_finding(raw, rules):
+    # The fixture reports carried interest as 0.0 for both funds.
+    rep = _report(raw, rules)
+    f = next(f for f in rep.findings if "only as zero" in f.title)
+    assert "Carried interest incurred to-date (2 funds)" in f.body
+
+
+def test_absent_datapoint_is_not_called_a_zero(raw, rules):
+    raw = raw[~((raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund NAV"))].reset_index(drop=True)
+    rep = _report(raw, rules)
+    f = next(f for f in rep.findings if "only as zero" in f.title)
+    assert "Fund NAV" not in f.body  # absent, not zero: reported by the checks as an error instead
+    assert f.title.startswith("2 funds")  # both still report carried interest as 0.0

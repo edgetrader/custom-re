@@ -91,6 +91,13 @@ padding:2px 9px;border-radius:999px}
 .cols ul{margin:6px 0 0;padding-left:20px;color:var(--muted)}h3.small{font-size:14px;margin:0}
 .gap-top{margin-top:18px}.gap-sm{margin-top:8px}
 .note{margin:10px 0 0;font-size:14px;color:var(--bad)}
+.dist{display:grid;gap:6px;margin:14px 0 18px;max-width:640px}
+.dist div{display:grid;grid-template-columns:110px 1fr 70px;align-items:center;gap:10px;font-size:14px}
+.track{height:12px;background:var(--soft);border-radius:999px;overflow:hidden}
+.track i{display:block;height:100%;background:var(--accent);border-radius:999px}
+.dist .n{color:var(--muted);font-variant-numeric:tabular-nums}
+.meter{display:flex;align-items:center;gap:8px;min-width:150px}.meter .track{flex:1}
+details{margin-top:12px}summary{cursor:pointer;font-weight:600;font-size:14px}
 footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 @media print{body{background:#fff}.filters{display:none}section,.finding{break-inside:avoid}
 tr[hidden]{display:table-row!important}}
@@ -155,6 +162,119 @@ def _findings(d: ReportData) -> str:
     return (f'<section id="findings"><h2>What management needs to decide or know</h2>'
             f'<p class="sub">{n} finding{"" if n == 1 else "s"}, most severe first.</p>'
             f'<ol class="findings">{items}</ol></section>')
+
+
+def _pct(x: float) -> str:
+    """Whole-number percentage, e.g. 0.613 -> 61%."""
+    return f"{x * 100:.0f}%"
+
+
+def _fund_rows(rows: pd.DataFrame, why: bool) -> str:
+    """Table rows for funds; `why` adds the datapoints reported only as zero."""
+    out = []
+    for r in rows.to_dict("records"):
+        zero_dps = _e(str(r["zero_datapoints"])) if "zero_datapoints" in r else ""
+        extra = f"<td>{zero_dps or '<span class=muted>—</span>'}</td>" if why else ""
+        out.append(
+            f'<tr><td class="n">{int(r["rank"])}</td><td>{_e(r["fund"])}</td><td>{_e(r["currency"])}</td>'
+            f'<td class="n">{int(r["datapoints_with_value"])} / {int(r["datapoints_total"])}</td>'
+            f'<td class="n">{_pct(float(r["value_share"]))}</td>{extra}</tr>'
+        )
+    return "".join(out)
+
+
+def _fund_table(rows: pd.DataFrame, why: bool = True) -> str:
+    """Fund completeness table; `why` adds the column of zero-only datapoints."""
+    head = ('<th>Rank</th><th>Fund</th><th>Ccy</th><th>Datapoints with value</th><th>Records with value</th>'
+            + ("<th>Reported only as zero</th>" if why else ""))
+    return (f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
+            f"<tbody>{_fund_rows(rows, why)}</tbody></table></div>")
+
+
+def _fund_completeness(d: ReportData) -> str:
+    fc = d.fund_completeness
+    if fc.empty:
+        return ""
+    total = int(fc["datapoints_total"].iloc[0])
+    n_full = int((fc["datapoints_with_value"] == total).sum())
+    levels = fc["datapoints_with_value"].value_counts().sort_index(ascending=False)
+    biggest = int(levels.max())
+    dist = "".join(
+        f'<div><span>{lvl} of {total}</span><span class="track"><i style="width:{n / biggest * 100:.1f}%">'
+        f'</i></span><span class="n">{_plural_funds(int(n))}</span></div>'
+        for lvl, n in levels.items()
+    )
+    n_rep = int((fc["datapoints_reported"] == total).sum())
+    reporting = (f"Every fund reports all {total} datapoints." if n_rep == len(fc)
+                 else f"{n_rep} of {len(fc)} funds report all {total} datapoints; the rest miss some "
+                      "(see the checks).")
+    n = min(d.top_n, len(fc))
+    return (
+        f'<section id="fund-completeness"><h2>Fund completeness: {n_full} of {len(fc)} funds have a value in '
+        f'every datapoint</h2><p class="sub">{reporting} '
+        'A datapoint counts as '
+        '"with value" when at least one of its records is non-zero; a zero may be genuine or may mean "not '
+        'reported". Funds are ranked by datapoints with value, then by the share of their records with a '
+        'non-zero value. Amounts are not compared, since each fund reports in its own currency.</p>'
+        '<h3 class="small">Funds by number of datapoints with a value</h3>'
+        f'<div class="dist" role="img" aria-label="Funds by datapoints with value">{dist}</div>'
+        f'<h3 class="small">Most complete</h3><div class="gap-sm">{_fund_table(fc.head(n), why=False)}</div>'
+        f'<h3 class="small gap-top">Least complete</h3>'
+        f'<div class="gap-sm">{_fund_table(fc.tail(n).iloc[::-1])}</div>'
+        f"<details><summary>All {len(fc)} funds</summary>{_fund_table(fc)}</details></section>"
+    )
+
+
+def _plural_funds(n: int) -> str:
+    """'1 fund' or 'N funds'."""
+    return f"{n} fund{'' if n == 1 else 's'}"
+
+
+def _dp_rows(dc: pd.DataFrame) -> str:
+    """Table rows for datapoints with a funds-with-value meter."""
+    out = []
+    for r in dc.to_dict("records"):
+        total, valued, recs = int(r["funds_total"]), int(r["funds_with_value"]), int(r["records"])
+        width = valued / total * 100 if total else 0.0
+        share = _pct(int(r["records_with_value"]) / recs) if recs else "—"
+        out.append(
+            f'<tr><td>{_e(r["datapoint"])}</td><td class="muted">{_e(r["category"])}</td>'
+            f'<td class="n">{int(r["funds_reporting"])} / {total}</td>'
+            f'<td><span class="meter"><span class="track"><i style="width:{width:.1f}%"></i></span>'
+            f'<span class="n">{valued} / {total}</span></span></td><td class="n">{share}</td></tr>'
+        )
+    return "".join(out)
+
+
+def _dp_table(dc: pd.DataFrame) -> str:
+    """Datapoint completeness table."""
+    return ('<div class="table-wrap"><table><thead><tr><th>Datapoint</th><th>Category</th>'
+            '<th>Funds reporting</th>'
+            '<th>Funds with value</th><th>Records with value</th></tr></thead>'
+            f"<tbody>{_dp_rows(dc)}</tbody></table></div>")
+
+
+def _datapoint_completeness(d: ReportData) -> str:
+    dc = d.datapoint_completeness
+    if dc.empty:
+        return ""
+    # Gaps: a fund with only zeros, or zero periods/positions within a series.
+    gaps = dc[(dc["funds_with_value"] < dc["funds_total"]) | (dc["records_with_value"] < dc["records"])]
+    n_full = int((dc["funds_with_value"] == dc["funds_total"]).sum())
+    complete = dc.loc[~dc.index.isin(gaps.index)]
+    lead = (f'<p>The other {len(complete)} datapoints have a non-zero value in every record '
+            'for every fund.</p>'
+            if len(complete) else "")
+    body = (f'<h3 class="small">Datapoints with zero values, most complete first</h3>'
+            f'<div class="gap-sm">{_dp_table(gaps)}</div>' if len(gaps) else "")
+    return (
+        f'<section id="datapoint-completeness"><h2>Datapoint completeness: {n_full} of {len(dc)} '
+        'have a value for every fund</h2><p class="sub">"Funds with value" counts funds with at '
+        'least one non-zero record. '
+        '"Records with value" is the share of records that are non-zero: for time series it shows how many '
+        f'periods carry a figure.</p>{body}{lead}'
+        f"<details><summary>All {len(dc)} datapoints</summary>{_dp_table(dc)}</details></section>"
+    )
 
 
 def _register(d: ReportData) -> str:
@@ -244,6 +364,8 @@ def _scope(d: ReportData) -> str:
         "<li>Agreement with managers' source reports or audited accounts.</li>"
         '<li>Whether the valuations themselves are appropriate.</li>'
         f'<li>Comparison with other quarters: this report covers {_e(d.period_label)} only.</li>'
+        '<li>Totals across funds: amounts are in each fund\'s own currency by design, so funds are compared '
+        'on completeness and ratios.</li>'
         '</ul></div></div></section>'
     )
 
@@ -265,7 +387,8 @@ def render_html(d: ReportData, generated: pd.Timestamp) -> str:
         f'<div class="eyebrow">Data quality review · {_e(d.period_label)}</div>'
         '<h1>Custom RE fund KPI extract: is it fit for use?</h1>'
         f'<dl class="meta">{meta_html}</dl>'
-        f"{_verdict(d)}{_figures(d)}{_usability(d)}{_findings(d)}{_register(d)}{_checks(d)}"
+        f"{_verdict(d)}{_figures(d)}{_usability(d)}{_findings(d)}{_fund_completeness(d)}"
+        f"{_datapoint_completeness(d)}{_register(d)}{_checks(d)}"
         f"{_next_steps(d)}{_scope(d)}"
         f'<footer>Generated by <code>app/run_dq.py</code> from {_e(d.source_name)}. Item-level results with '
         'Excel row references are in <code>dq_report.xlsx</code> in the same folder.</footer>'

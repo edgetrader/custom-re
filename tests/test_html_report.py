@@ -19,7 +19,8 @@ def test_render_contains_sections_and_findings(raw, rules):
     page = render_html(rep, pd.Timestamp("2026-07-15 09:30"))
     assert page.startswith("<!doctype html>")
     assert "<title>Custom RE Q2 2026 Data Quality</title>" in page
-    for anchor in ['id="usability"', 'id="findings"', 'id="register"', 'id="checks"', 'id="next"']:
+    for anchor in ['id="usability"', 'id="findings"', 'id="fund-completeness"', 'id="datapoint-completeness"',
+                   'id="register"', 'id="checks"', 'id="next"']:
         assert anchor in page
     for f in rep.findings:
         assert f.action.replace("'", "&#x27;") in page
@@ -51,3 +52,11 @@ def test_unassigned_errors_note(raw, rules):
     rules["expected_fund_count"] = 3
     page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
     assert "apply to no single datapoint" in page
+
+
+def test_reporting_sentence_follows_the_data(raw, rules):
+    page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
+    assert "Every fund reports all 36 datapoints." in page
+    raw = raw[~((raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Fund NAV"))].reset_index(drop=True)
+    page = render_html(_report(raw, rules), pd.Timestamp("2026-07-15"))
+    assert "1 of 2 funds report all 36 datapoints" in page

@@ -9,10 +9,17 @@ import pandas as pd
 MAX_COL_WIDTH = 80
 
 
-def write_report(path: Path, summary: pd.DataFrame, issues: pd.DataFrame, funds: pd.DataFrame) -> None:
-    """Write Summary, Issues and Fund Metrics sheets with filters, frozen headers and sized columns."""
+def write_report(
+    path: Path,
+    summary: pd.DataFrame,
+    issues: pd.DataFrame,
+    funds: pd.DataFrame,
+    completeness: dict[str, pd.DataFrame] | None = None,
+) -> None:
+    """Write Summary, Issues, Fund Metrics and any completeness sheets, with filters and sized columns."""
     path.parent.mkdir(parents=True, exist_ok=True)
     sheets = {"Summary": summary, "Issues": issues, "Fund Metrics": funds.reset_index()}
+    sheets.update(completeness or {})
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
         for name, frame in sheets.items():
             frame.to_excel(xw, sheet_name=name, index=False)

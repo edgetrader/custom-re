@@ -138,6 +138,7 @@ report:
   exact_share_tol: 1.0e-4         # shares: agreement within 0.01 points, allowing for rounding
   anonymised_label_pattern: '^Country \d+$'
   reconcile_sample: 3 to 5        # funds to reconcile against manager reports
+  completeness_top_n: 5           # funds shown as most and least complete
   # Source columns that are expected to be empty, with what their absence means.
   empty_field_notes:
     Scenario: Actual and forecast values cannot be told apart.
