@@ -126,7 +126,7 @@ def _issues(raw, rules):
     "dp",
     [
         "Portfolio sector percentage (by GAV) - total portfolio Sector Level 1",
-        "Country",
+        "Country Percentage",
         "Portfolio average occupancy rate",
         "Average occupancy rate (%) - completed assets Sector Level 2",
     ],
@@ -138,9 +138,11 @@ def test_duplicates_are_reported_not_crashing(raw, rules, dp):
     assert "duplicate_key" in set(issues["check"])
 
 
-def test_repeated_region_label_is_not_a_duplicate(raw, rules):
-    """Several countries share a region, so identical region rows are allowed and must not crash."""
-    row = raw[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Region Level 1")].iloc[[0]]
+@pytest.mark.parametrize(
+    "dp", ["Country", "Region Level 1", "Region Level 2", "Sector - level 1", "Sector - level 2"])
+def test_repeated_label_row_is_not_a_duplicate(raw, rules, dp):
+    """Label rows are never checked for duplicates; a repeated row must not crash anything either."""
+    row = raw[(raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == dp)].iloc[[0]]
     issues = _issues(pd.concat([raw, row], ignore_index=True), rules)
     assert not {"check_crashed", "duplicate_key"} & set(issues["check"])
 
@@ -346,13 +348,11 @@ def test_region_analysis1_naming_another_country_is_ignored(raw, rules):
     assert _flags(raw, rules) == set()
 
 
-def test_duplicate_label_is_found_by_value_string(raw, rules):
-    mask = (raw["Company"] == "Fund A") & (raw["Datapoint.Name"] == "Country")
-    raw.loc[mask, "Analysis1"] = "Other value"
-    raw.loc[raw.index[mask][1], "Value String"] = raw.loc[raw.index[mask][0], "Value String"]
-    issues = _issues(raw, rules)
-    dups = issues[issues["check"] == "duplicate_key"]
-    assert set(dups["datapoint"]) == {"Country"} and len(dups) == 2
+def test_label_rows_sharing_all_analysis_values_are_not_duplicates(raw, rules):
+    mask = raw["Datapoint.Name"].isin(LABEL_DPS)
+    for col in ["Analysis1", "Analysis2", "Analysis3", "Analysis4"]:
+        raw.loc[mask, col] = "Same value"
+    assert "duplicate_key" not in set(_issues(raw, rules)["check"])
 
 
 def test_new_region_and_sector_labels_are_accepted(raw, rules):

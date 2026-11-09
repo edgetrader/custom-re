@@ -86,8 +86,9 @@ OCC_L2 = "Average occupancy rate (%) - completed assets Sector Level 2"
 OCC_FUND = "Portfolio average occupancy rate"
 GAV_COMPOSITION = ["Cash & Near Cash", "Others", "Real Estate Investments (Immovable Property)"]
 
-# Label datapoints: the label is Value String. Their analysis columns may hold other values, so they are
-# neither required nor compared with the label.
+# Label datapoints: the label is Value String. Their analysis columns (Analysis1-4) are expected to hold
+# other values, so they are neither required nor compared with the label, and label rows are never
+# checked for duplicates.
 LABEL_DATAPOINTS = [COUNTRY, REGION_L1, REGION_L2, SECTOR_L1, SECTOR_L2]
 
 # Analysis columns each exposure percentage datapoint must populate.
@@ -419,19 +420,13 @@ def check_value_type(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
 def check_duplicate_keys(df: pd.DataFrame) -> pd.DataFrame:
     """No two rows share fund, datapoint, date and analysis dimensions.
 
-    Label rows have no reliable analysis key, so a country or sector label must instead be unique by its
-    Value String. Region labels repeat by design (several countries share a region), so they are not
-    checked here.
+    Label rows (LABEL_DATAPOINTS) are not checked: their analysis columns are not a key and the same label
+    may repeat (several countries share a region).
     """
     labels = df["datapoint"].isin(LABEL_DATAPOINTS)
-    other_dups = df[~labels & df.duplicated(KEY, keep=False)]
-    # Blank labels are value_missing gaps, not duplicates of each other.
-    named = df[df["datapoint"].isin([COUNTRY, SECTOR_L1, SECTOR_L2]) & df["value_str"].notna()]
-    label_dups = named[named.duplicated(["fund", "datapoint", "date", "value_str"], keep=False)]
-    dup = pd.concat([other_dups, label_dups])
+    dup = df[~labels & df.duplicated(KEY, keep=False)]
     return _frame(_row_issues(dup, "duplicate_key", "error",
-                              lambda r: f"Duplicate key on {r['date']} / "
-                              f"{r['value_str'] if r['datapoint'] in LABEL_DATAPOINTS else r['a1']}"))
+                              lambda r: f"Duplicate key on {r['date']} / {r['a1']}"))
 
 
 # ---------------------------------------------------------------- validity
