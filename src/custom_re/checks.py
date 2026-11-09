@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from custom_re.loader import KEY, RENAME, fund_info_wide
+from custom_re.reference import gp_map
 
 ISSUE_COLUMNS = ["group", "check", "severity", "fund", "datapoint", "excel_row", "detail"]
 SEVERITIES = ["error", "warning", "info"]
@@ -68,6 +69,10 @@ CHECK_GROUPS = {
     "zero_interest": "business",
     "date_order": "business",
     "iqr_outlier": "outlier",
+    "reference_incomplete_row": "reference",
+    "reference_duplicate_fund": "reference",
+    "fund_not_in_reference": "reference",
+    "fund_missing_from_extract": "reference",
 }
 
 # Datapoint names used by several checks.
@@ -671,11 +676,54 @@ def check_outliers(df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
     return _frame(out)
 
 
+# ---------------------------------------------------------------- GP reference
+
+
+def check_reference(df: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
+    """Check that the GP reference is well formed and lists exactly the funds in the extract."""
+    out = []
+    # Reference rows are not extract rows, so their row number goes in the detail, not excel_row.
+    for r in reference[reference[["gp", "fund"]].isna().any(axis=1)].to_dict("records"):
+        blank = "GP Name" if pd.isna(r["gp"]) else "Fund Name"
+        out.append(_issue("reference_incomplete_row", "error",
+                          f"Reference row {r['excel_row']} has no {blank}",
+                          None if pd.isna(r["fund"]) else r["fund"]))
+    listed = reference.dropna(subset=["gp", "fund"])
+    for fund, rows in listed[listed["fund"].duplicated(keep=False)].groupby("fund"):
+        gps = sorted(rows["gp"].unique())
+        rows_text = ", ".join(str(x) for x in rows["excel_row"])
+        if len(gps) > 1:
+            out.append(_issue("reference_duplicate_fund", "error",
+                              f"Listed under {len(gps)} GPs ({', '.join(gps)}) in reference rows "
+                              f"{rows_text}; "
+                              f"using {rows['gp'].iloc[0]}", fund))
+        else:
+            out.append(_issue("reference_duplicate_fund", "warning",
+                              f"Listed {len(rows)} times under {gps[0]} (reference rows {rows_text})", fund))
+
+    # Names must match exactly; a near miss (case or spacing) is pointed out to speed up the fix.
+    def norm(name: str) -> str:
+        return " ".join(name.split()).casefold()
+
+    in_ref, in_extract = set(listed["fund"]), set(df["fund"].dropna())
+    ref_by_norm = {norm(f): f for f in in_ref - in_extract}
+    for fund in sorted(in_extract - in_ref):
+        hint = ref_by_norm.get(norm(fund))
+        out.append(_issue("fund_not_in_reference", "error",
+                          "Fund is not in the GP reference, so its GP is unknown"
+                          + (f"; the reference has {hint!r}" if hint else ""), fund))
+    gp = gp_map(reference)
+    for fund in sorted(in_ref - in_extract):
+        out.append(_issue("fund_missing_from_extract", "error",
+                          f"Expected from {gp[fund]} per the GP reference, but not in the extract", fund))
+    return _frame(out)
+
+
 # ---------------------------------------------------------------- runner
 
 
-def run_all(raw: pd.DataFrame, df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
-    """Run every check and return all issues, most severe first.
+def run_all(raw: pd.DataFrame, df: pd.DataFrame, rules: Rules, reference: pd.DataFrame) -> pd.DataFrame:
+    """Run every check, including those against the GP `reference`, and return all issues, most severe first.
 
     A check that raises becomes a `check_crashed` error instead of aborting the run.
     """
@@ -699,6 +747,7 @@ def run_all(raw: pd.DataFrame, df: pd.DataFrame, rules: Rules) -> pd.DataFrame:
         ("check_occupancy_weighted", lambda: check_occupancy_weighted(df, rules)),
         ("check_business_rules", lambda: check_business_rules(df, rules)),
         ("check_outliers", lambda: check_outliers(df, rules)),
+        ("check_reference", lambda: check_reference(df, reference)),
     ]
     results = []
     for name, fn in checks:

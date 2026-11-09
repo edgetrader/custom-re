@@ -4,8 +4,8 @@
 # reporting_date is not set here: app/run_dq.py derives it from the period argument
 # (quarter end), so this file does not change each quarter.
 
-# The fund universe expected in each extract.
-expected_fund_count: 60
+# The expected fund universe is not set here either: app/run_dq.py sets expected_fund_count to the
+# number of funds in the GP reference file (see config/settings.yaml), the single list of expected funds.
 
 valid_currencies: [AUD, EUR, GBP, HKD, JPY, NOK, SGD, USD]
 

@@ -10,7 +10,14 @@ import numpy as np
 import pandas as pd
 
 from custom_re.checks import CHECK_GROUPS, calendar
-from custom_re.completeness import datapoint_completeness, fund_completeness
+from custom_re.completeness import (
+    MISSING,
+    REPORTED,
+    UNLISTED,
+    datapoint_completeness,
+    fund_completeness,
+    gp_completeness,
+)
 from custom_re.loader import RENAME, fund_info_wide
 
 Rules = dict[str, Any]
@@ -92,7 +99,8 @@ class ReportData:
     flagged: pd.DataFrame  # non-PASS checks with an example detail
     counts: dict[str, int]  # issues by severity
     unassigned_errors: int  # errors not tied to one datapoint, so not reflected in register ratings
-    fund_completeness: pd.DataFrame  # one row per fund, most complete first
+    gp_completeness: pd.DataFrame  # one row per GP, most complete first
+    fund_completeness: pd.DataFrame  # one row per fund (extract or GP reference), most complete first
     datapoint_completeness: pd.DataFrame  # one row per datapoint, most complete first
     top_n: int  # funds shown as most and least complete
 
@@ -327,8 +335,12 @@ def _exact_occupancy_share(df: pd.DataFrame, w: pd.DataFrame, cfg: dict[str, Any
 # ---------------------------------------------------------------- findings
 
 
-def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: Rules) -> list[Finding]:
-    """Return management findings that apply to this quarter, most severe first."""
+def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: Rules,
+             fc: pd.DataFrame) -> list[Finding]:
+    """Return management findings that apply to this quarter, most severe first.
+
+    `fc` is the fund completeness table (fund_completeness), which carries each fund's GP and status.
+    """
     report = pd.Timestamp(rules["reporting_date"])
     cfg = rules["report"]
     w = fund_info_wide(df)
@@ -348,10 +360,22 @@ def findings(df: pd.DataFrame, raw: pd.DataFrame, issues: pd.DataFrame, rules: R
             "Correct at source and rerun. Every item, with its Excel row, is listed in dq_report.xlsx.",
         ))
 
+    # Fund coverage against the GP reference: named funds, so managers can be chased directly.
+    for status, title, action in [
+        (MISSING, "{} in the GP reference {} missing from the extract",
+         "Ask the GPs listed to submit these funds, or remove funds that have closed from the reference."),
+        (UNLISTED, "{} in the extract {} not in the GP reference",
+         "Add these funds to the GP reference (or correct the name) so they are attributed to a GP."),
+    ]:
+        sub = fc[fc["status"] == status]
+        if len(sub):
+            listed = "; ".join(f"{gp}: {', '.join(g['fund'])}" for gp, g in sub.groupby("gp", sort=True))
+            out.append(Finding(title.format(_plural(len(sub), "fund"), "is" if len(sub) == 1 else "are"),
+                               "bad", "Fund coverage", f"{listed}.", action))
+
     # Datapoints a fund reports, but only ever as zero. Absent datapoints are check errors instead.
-    fc = fund_completeness(df, rules)
     dc = datapoint_completeness(df, rules)
-    zero_funds = fc[fc["zero_datapoints"] != ""]
+    zero_funds = fc[(fc["zero_datapoints"] != "") & (fc["status"] != MISSING)]
     zero_dps = (dc.set_index("datapoint")["funds_reporting"] - dc.set_index("datapoint")["funds_with_value"])
     zero_dps = zero_dps[zero_dps > 0].sort_values(ascending=False, kind="stable")
     if len(zero_funds):
@@ -481,6 +505,8 @@ GROUP_TEXT = {
     "consistency": "Mixes sum to 100%, sector and region hierarchies agree, occupancy matches sectors.",
     "business": "NAV ≤ GAV, LTV within cap, lifecycle split, debt = LTV × GAV, fees, bad debts, dates.",
     "outlier": "No fund outside the normal cross-fund range on currency-free metrics.",
+    "reference": "GP reference rows complete, each fund listed once, every expected fund reported "
+                 "and mapped.",
 }
 
 
@@ -497,20 +523,25 @@ def _check_groups(summary: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summary: pd.DataFrame,
-                 rules: Rules, period_label: str, source_name: str) -> ReportData:
-    """Assemble all report content for one quarter's extract."""
+                 rules: Rules, reference: pd.DataFrame, period_label: str, source_name: str) -> ReportData:
+    """Assemble all report content for one quarter's extract and its GP `reference`."""
     report = pd.Timestamp(rules["reporting_date"])
     counts = {s: int((issues["severity"] == s).sum()) for s in ["error", "warning", "info"]}
     register = datapoint_register(df, raw, issues, rules)
-    found = findings(df, raw, issues, rules)
+    fc = fund_completeness(df, rules, reference)
+    gc = gp_completeness(fc, issues)
+    found = findings(df, raw, issues, rules, fc)
     n_funds = df["fund"].nunique()
     catalogue = [dp for dps in rules["datapoints"].values() for dp in dps]
     # INFO checks are observations, not defects, so they count as passed.
     n_pass = int((summary["status"] != "FLAG").sum())
     n_ccy = df.groupby("fund")["currency"].first().nunique()
     full = sum(r.total > 0 and r.coverage == r.total for r in register if r.rating != EMPTY)
-    fc = fund_completeness(df, rules)
     dc = datapoint_completeness(df, rules)
+    # Fund coverage against the reference; funds not in the reference are reported but not expected.
+    n_expected = int((fc["status"] != UNLISTED).sum())
+    n_expected_reported = int((fc["status"] == REPORTED).sum())
+    n_unlisted = int((fc["status"] == UNLISTED).sum())
     n_all_valued = int((fc["datapoints_with_value"] == fc["datapoints_total"]).sum())
 
     blockers = [f.title.lower() for f in found if f.tone in ("bad", "warn")]
@@ -542,14 +573,16 @@ def build_report(raw: pd.DataFrame, df: pd.DataFrame, issues: pd.DataFrame, summ
 
     figures = [
         (f"{len(df):,}", "records reviewed"),
-        (f"{n_funds}", f"funds (expected {rules['expected_fund_count']})"),
+        (f"{reference['gp'].dropna().nunique()}", "GPs in the reference"),
+        (f"{n_expected_reported} / {n_expected}", "expected funds reported"
+         + (f" (+{n_unlisted} not in the reference)" if n_unlisted else "")),
         (f"{len(catalogue)}", f"datapoints in {len(rules['datapoints'])} categories"),
         (f"{n_pass} / {len(summary)}", "checks passed"),
         (f"{n_ccy}", "currencies, one per fund"),
         (f"{n_all_valued} / {n_funds}", f"funds with a value in all {len(catalogue)} datapoints"),
     ]
     return ReportData(period_label, report, source_name, tone, verdict, detail, figures, register, found,
-                      _check_groups(summary), flagged, counts, unassigned, fc, dc,
+                      _check_groups(summary), flagged, counts, unassigned, gc, fc, dc,
                       int(rules["report"]["completeness_top_n"]))
 
 

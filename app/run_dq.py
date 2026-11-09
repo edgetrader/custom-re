@@ -14,10 +14,17 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from custom_re.checks import fund_metrics, run_all, summarise  # noqa: E402
-from custom_re.completeness import datapoint_completeness, fund_completeness  # noqa: E402
+from custom_re.completeness import (  # noqa: E402
+    MISSING,
+    UNLISTED,
+    datapoint_completeness,
+    fund_completeness,
+    gp_completeness,
+)
 from custom_re.html_report import write_html  # noqa: E402
 from custom_re.insights import build_report  # noqa: E402
 from custom_re.loader import load_rules, read_raw, tidy  # noqa: E402
+from custom_re.reference import add_gp, gp_map, read_reference  # noqa: E402
 from custom_re.report import write_report  # noqa: E402
 from custom_re.settings import load_settings, parse_period  # noqa: E402
 
@@ -34,6 +41,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--input", type=Path,
                    help="use this extract instead of the one named in the settings; the period still sets "
                         "the expected reporting date and the output folder")
+    p.add_argument("--reference", type=Path,
+                   help="use this GP reference workbook instead of the one named in the settings")
     return p.parse_args(argv)
 
 
@@ -51,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         src = args.input or settings.input_path(period)
         if not src.is_file():
             raise ValueError(f"no extract for {period.label} at {src}")
+        ref_path = args.reference or settings.reference_file
+        if not ref_path.is_file():
+            raise ValueError(f"no GP reference at {ref_path}")
+        reference = read_reference(ref_path)
         raw = read_raw(src)
         df = tidy(raw)
     except (ValueError, OSError) as exc:
@@ -61,19 +74,24 @@ def main(argv: list[str] | None = None) -> int:
     # The period is the single source of the reporting date (any value in the rules YAML is
     # overridden), so check_reporting_date catches an extract from the wrong quarter.
     rules["reporting_date"] = period.end.date().isoformat()
+    # Likewise the GP reference is the single list of expected funds.
+    rules["expected_fund_count"] = len(gp_map(reference))
 
     # Checks run outside the try: run_all isolates their crashes as check_crashed issues.
-    issues = run_all(raw, df, rules)
+    issues = run_all(raw, df, rules, reference)
     summary = summarise(issues)
     out_dir = settings.period_output_dir(period)
-    fc, dc = fund_completeness(df, rules), datapoint_completeness(df, rules)
-    write_report(out_dir / REPORT_NAME, summary, issues, fund_metrics(df),
-                 {"Fund Completeness": fc, "Datapoint Completeness": dc})
+    fc = fund_completeness(df, rules, reference)
+    gc, dc = gp_completeness(fc, issues), datapoint_completeness(df, rules)
+    # GP first, then fund: the workbook's fund-level sheets carry the GP for filtering.
+    write_report(out_dir / REPORT_NAME, summary, add_gp(issues, reference),
+                 add_gp(fund_metrics(df).reset_index(), reference).set_index(["gp", "fund"]),
+                 {"GP Completeness": gc, "Fund Completeness": fc, "Datapoint Completeness": dc})
     # The HTML report is presentation: a bug there must not hide the Excel results or look like a
     # data-quality failure, so it is isolated here at the app boundary.
     html_ok = True
     try:
-        report = build_report(raw, df, issues, summary, rules, period.label, src.name)
+        report = build_report(raw, df, issues, summary, rules, reference, period.label, src.name)
         write_html(out_dir / HTML_NAME, report)
     except Exception as exc:  # noqa: BLE001
         html_ok = False
@@ -81,14 +99,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"HTML report failed: {exc!r}", file=sys.stderr)
 
     counts = issues["severity"].value_counts().reindex(["error", "warning", "info"], fill_value=0)
-    print(f"Period: {period.label}  Input: {src}")
+    print(f"Period: {period.label}  Input: {src}  GP reference: {ref_path}")
     print(f"Rows: {len(df):,}  Funds: {df['fund'].nunique()}  Checks: {len(summary)}")
     print(f"Issues -> errors: {counts['error']}  warnings: {counts['warning']}  info: {counts['info']}")
     print(summary[summary["status"] != "PASS"].to_string(index=False))
-    if len(fc):
-        total = int(fc["datapoints_total"].iloc[0])
-        print(f"Completeness: {int((fc['datapoints_with_value'] == total).sum())} of {len(fc)} funds have a "
-              f"non-zero value in all {total} datapoints; lowest {int(fc['datapoints_with_value'].min())}.")
+    # Completeness of what was submitted; funds missing from the extract are counted on the GP line.
+    sub = fc[fc["status"] != MISSING]
+    if len(sub):
+        total = int(sub["datapoints_total"].iloc[0])
+        full = int((sub["datapoints_with_value"] == total).sum())
+        print(f"Completeness: {full} of {len(sub)} funds have a "
+              f"non-zero value in all {total} datapoints; lowest {int(sub['datapoints_with_value'].min())}.")
+    if len(gc):
+        print(f"GPs: {len(gc)}  Funds expected: {int(gc['funds_expected'].sum())}  "
+              f"missing from extract: {int(gc['funds_missing'].sum())}  "
+              f"not in reference: {int((fc['status'] == UNLISTED).sum())}")
     written = [REPORT_NAME] + ([HTML_NAME] if html_ok else [])
     print(f"Reports written to {out_dir}: {', '.join(written)}")
     if counts["error"]:

@@ -28,18 +28,22 @@ def test_period_names_and_quarter_end(q, end):
 def test_load_settings_resolves_relative_and_absolute_paths(tmp_path):
     cfg = tmp_path / "s.yaml"
     cfg.write_text(f"data_dir: data\noutput_dir: {tmp_path / 'abs_out'}\n"
-                   "rules_file: config/r.yaml\ninput_pattern: 'X_{period}.xlsx'\n")
+                   "rules_file: config/r.yaml\ninput_pattern: 'X_{period}.xlsx'\n"
+                   f"reference_file: {tmp_path / 'ref' / 'GP.xlsx'}\n")
     s = load_settings(cfg, root=tmp_path / "proj")
     p = Period(2026, 2)
     assert s.input_path(p) == tmp_path / "proj" / "data" / "X_2026Q2.xlsx"
     assert s.period_output_dir(p) == tmp_path / "abs_out" / "2026Q2"
     assert s.rules_file == tmp_path / "proj" / "config" / "r.yaml"
+    assert s.reference_file == tmp_path / "ref" / "GP.xlsx"
 
 
 @pytest.mark.parametrize(("body", "msg"), [
     ("data_dir: d\n", "missing settings"),
-    ("data_dir: d\noutput_dir: o\nrules_file: r\ninput_pattern: fixed.xlsx\n", "must contain"),
-    ("data_dir: d\noutput_dir: o\nrules_file: r\ninput_pattern: '{year}_{period}.xlsx'\n", "only use"),
+    ("data_dir: d\noutput_dir: o\nrules_file: r\nreference_file: g\n"
+     "input_pattern: fixed.xlsx\n", "must contain"),
+    ("data_dir: d\noutput_dir: o\nrules_file: r\nreference_file: g\n"
+     "input_pattern: '{year}_{period}.xlsx'\n", "only use"),
     ("- a list\n", "must be a mapping"),
     ("data_dir: [unclosed\n", "not valid YAML"),
 ])

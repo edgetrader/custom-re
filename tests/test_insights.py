@@ -6,12 +6,13 @@ import pytest
 from custom_re.checks import run_all, summarise
 from custom_re.insights import CARE, EMPTY, NOT_USABLE, READY, build_report, fmt_amount, fmt_pct
 from custom_re.loader import tidy
+from tests.conftest import ref_for
 
 
 def _report(raw, rules):
     df = tidy(raw)
-    issues = run_all(raw, df, rules)
-    return build_report(raw, df, issues, summarise(issues), rules, "Q2 2026", "x.xlsx")
+    issues = run_all(raw, df, rules, ref_for(raw))
+    return build_report(raw, df, issues, summarise(issues), rules, ref_for(raw), "Q2 2026", "x.xlsx")
 
 
 def _titles(rep):
@@ -101,7 +102,7 @@ def test_errors_make_report_not_ready(raw, rules):
 
 def test_check_groups_cover_every_check(raw, rules):
     rep = _report(raw, rules)
-    assert int(rep.checks["checks"].sum()) == 45
+    assert int(rep.checks["checks"].sum()) == 49
     assert set(rep.flagged["status"]) <= {"INFO", "FLAG"}
 
 

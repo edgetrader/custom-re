@@ -7,3 +7,7 @@ rules_file: config/dq_rules.yaml
 
 # Extract file name for a period. {period} becomes the period code, e.g. 2026Q2.
 input_pattern: "Custom_RE_Extract_{period}.xlsx"
+
+# GP reference workbook: sheet "Fund Name" with columns "GP Name" and "Fund Name".
+# It lists the funds expected each quarter and the GP of each. A full path can be used.
+reference_file: data/Fund_Reference.xlsx

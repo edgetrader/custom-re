@@ -8,6 +8,7 @@ from typing import cast
 
 import pandas as pd
 
+from custom_re.completeness import MISSING, REPORTED
 from custom_re.insights import CARE, EMPTY, NOT_USABLE, RATINGS, READY, ReportData, ratings_count, slug
 
 RATING_TEXT = {
@@ -90,7 +91,7 @@ padding:2px 9px;border-radius:999px}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px 32px}
 .cols ul{margin:6px 0 0;padding-left:20px;color:var(--muted)}h3.small{font-size:14px;margin:0}
 .gap-top{margin-top:18px}.gap-sm{margin-top:8px}
-.note{margin:10px 0 0;font-size:14px;color:var(--bad)}
+.note{margin:10px 0 0;font-size:14px;color:var(--bad)}.bad-text{color:var(--bad);font-weight:600}
 .dist{display:grid;gap:6px;margin:14px 0 18px;max-width:640px}
 .dist div{display:grid;grid-template-columns:110px 1fr 70px;align-items:center;gap:10px;font-size:14px}
 .track{height:12px;background:var(--soft);border-radius:999px;overflow:hidden}
@@ -169,30 +170,103 @@ def _pct(x: float) -> str:
     return f"{x * 100:.0f}%"
 
 
-def _fund_rows(rows: pd.DataFrame, why: bool) -> str:
-    """Table rows for funds; `why` adds the datapoints reported only as zero."""
-    out = []
-    for r in rows.to_dict("records"):
-        zero_dps = _e(str(r["zero_datapoints"])) if "zero_datapoints" in r else ""
-        extra = f"<td>{zero_dps or '<span class=muted>—</span>'}</td>" if why else ""
-        out.append(
-            f'<tr><td class="n">{int(r["rank"])}</td><td>{_e(r["fund"])}</td><td>{_e(r["currency"])}</td>'
-            f'<td class="n">{int(r["datapoints_with_value"])} / {int(r["datapoints_total"])}</td>'
-            f'<td class="n">{_pct(float(r["value_share"]))}</td>{extra}</tr>'
-        )
-    return "".join(out)
+def _fund_row(r: dict[str, object], why: bool, gp: bool) -> str:
+    """One fund table row; `why` adds the gap column, `gp` the GP column."""
+    cells = [f'<td class="n">{int(cast(int, r["rank"]))}</td>']
+    if gp:
+        cells.append(f"<td>{_e(r['gp'])}</td>")
+    # A fund missing from the extract has no currency (NaN).
+    ccy = _e(r["currency"]) if isinstance(r["currency"], str) else "—"
+    cells += [f"<td>{_e(r['fund'])}</td>", f"<td>{ccy}</td>",
+              f'<td class="n">{int(cast(int, r["datapoints_with_value"]))} / '
+              f'{int(cast(int, r["datapoints_total"]))}</td>',
+              f'<td class="n">{_pct(float(cast(float, r["value_share"])))}</td>']
+    if why:
+        # Status first when the fund is not matched to the reference; then any zero-only datapoints.
+        parts = [f'<span class="bad-text">{_e(r["status"])}</span>'] if r["status"] != REPORTED else []
+        if r["zero_datapoints"]:
+            parts.append(_e(r["zero_datapoints"]))
+        cells.append(f"<td>{'. '.join(parts) or '<span class=muted>—</span>'}</td>")
+    return f"<tr>{''.join(cells)}</tr>"
+
+
+def _fund_head(why: bool, gp: bool) -> str:
+    """Header cells matching _fund_row."""
+    return ("<th>Rank</th>" + ("<th>GP</th>" if gp else "") + "<th>Fund</th><th>Ccy</th>"
+            "<th>Datapoints with value</th><th>Records with value</th>"
+            + ("<th>Gap: reported only as zero, or status</th>" if why else ""))
 
 
 def _fund_table(rows: pd.DataFrame, why: bool = True) -> str:
-    """Fund completeness table; `why` adds the column of zero-only datapoints."""
-    head = ('<th>Rank</th><th>Fund</th><th>Ccy</th><th>Datapoints with value</th><th>Records with value</th>'
-            + ("<th>Reported only as zero</th>" if why else ""))
-    return (f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
-            f"<tbody>{_fund_rows(rows, why)}</tbody></table></div>")
+    """Fund completeness table with the GP of each fund; `why` adds the gap column."""
+    records = cast("list[dict[str, object]]", rows.to_dict("records"))
+    body = "".join(_fund_row(r, why, gp=True) for r in records)
+    return (f'<div class="table-wrap"><table><thead><tr>{_fund_head(why, gp=True)}</tr></thead>'
+            f"<tbody>{body}</tbody></table></div>")
+
+
+def _funds_by_gp(d: ReportData) -> str:
+    """Every fund, grouped under its GP in GP rank order, funds by rank within each GP."""
+    fc = d.fund_completeness
+    body = []
+    for gp in d.gp_completeness["gp"]:
+        funds = fc[fc["gp"] == gp]
+        body.append(f'<tr class="cat"><td colspan="6">{_e(gp)} · {_plural_funds(len(funds))}</td></tr>')
+        body += [_fund_row(r, why=True, gp=False) for r in funds.to_dict("records")]
+    return (f'<div class="table-wrap"><table><thead><tr>{_fund_head(why=True, gp=False)}</tr></thead>'
+            f"<tbody>{''.join(body)}</tbody></table></div>")
+
+
+def _gp_completeness(d: ReportData) -> str:
+    gc, fc = d.gp_completeness, d.fund_completeness
+    if gc.empty:
+        return ""
+    total = int(gc["datapoints_total"].iloc[0])
+    dp_of = dict(zip(fc["fund"], fc["datapoints_with_value"], strict=True))
+    rows = []
+    for r in gc.to_dict("records"):
+        expected, reported = int(r["funds_expected"]), int(r["funds_reported"])
+        mean = float(r["mean_datapoints_with_value"])
+        width = mean / total * 100 if total else 0.0
+        # A GP with no reported fund has no average to show, only its missing funds.
+        avg = (f'<span class="meter"><span class="track"><i style="width:{width:.1f}%"></i></span>'
+               f'<span class="n">{mean:.1f} / {total}</span></span>'
+               if reported else '<span class="muted">—</span>')
+        share = _pct(float(r["value_share"])) if reported else "—"
+        funds_txt = f"{reported} / {expected}" if expected else f"{reported} unlisted"
+        short = ' class="n bad-text"' if reported < expected or not expected else ' class="n"'
+        issues = (f'{int(r["errors"])} · {int(r["warnings"])}' if r["errors"] or r["warnings"]
+                  else '<span class="muted">—</span>')
+        least = r["least_complete_fund"]
+        rows.append(
+            f'<tr><td class="n">{int(r["rank"])}</td><td>{_e(r["gp"])}</td><td{short}>{funds_txt}</td>'
+            f'<td class="n">{int(r["funds_all_valued"])} / {reported}</td>'
+            f'<td>{avg}</td><td class="n">{share}</td><td class="n">{issues}</td>'
+            f'<td>{_e(r["currencies"]) or "—"}</td><td>{_e(least)} ({int(dp_of[least])})</td></tr>'
+        )
+    mapped = gc[gc["funds_expected"] > 0]
+    n_short = int((mapped["funds_missing"] > 0).sum())
+    head = (f"all {len(mapped)} GPs reported every expected fund" if not n_short
+            else f"{n_short} of {len(mapped)} GPs have funds missing from the extract")
+    n_full = int((mapped["funds_all_valued"] == mapped["funds_expected"]).sum())
+    return (
+        f'<section id="gp-completeness"><h2>Completeness by GP: {head}</h2>'
+        f'<p class="sub">Each fund is attributed to its GP through the GP reference file. GPs are ranked by '
+        'the share of their expected funds reported, then the average number of datapoints with a value '
+        f'per reported fund, then the share of records with a value. {n_full} of {len(mapped)} GPs have a '
+        f'value in all {total} datapoints for every fund. Only counts are combined, never amounts, so a GP '
+        'with funds in several currencies is compared like any other.</p>'
+        '<div class="table-wrap"><table><thead><tr><th>Rank</th><th>GP</th><th>Funds reported</th>'
+        f'<th>Funds with all {total}</th><th>Average datapoints with value</th><th>Records with value</th>'
+        '<th>Errors · warnings</th><th>Currencies</th><th>Least complete fund</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div></section>'
+    )
 
 
 def _fund_completeness(d: ReportData) -> str:
-    fc = d.fund_completeness
+    # Statistics describe what was submitted; funds missing from the extract are shown by GP and in the
+    # findings, so they would only crowd out the real laggards here.
+    fc = d.fund_completeness[d.fund_completeness["status"] != MISSING]
     if fc.empty:
         return ""
     total = int(fc["datapoints_total"].iloc[0])
@@ -208,6 +282,10 @@ def _fund_completeness(d: ReportData) -> str:
     reporting = (f"Every fund reports all {total} datapoints." if n_rep == len(fc)
                  else f"{n_rep} of {len(fc)} funds report all {total} datapoints; the rest miss some "
                       "(see the checks).")
+    n_missing = int((d.fund_completeness["status"] == MISSING).sum())
+    if n_missing:
+        reporting += (f" {_plural_funds(n_missing)} in the GP reference {'is' if n_missing == 1 else 'are'} "
+                      "missing from the extract and not counted here (see Completeness by GP).")
     n = min(d.top_n, len(fc))
     return (
         f'<section id="fund-completeness"><h2>Fund completeness: {n_full} of {len(fc)} funds have a value in '
@@ -221,7 +299,8 @@ def _fund_completeness(d: ReportData) -> str:
         f'<h3 class="small">Most complete</h3><div class="gap-sm">{_fund_table(fc.head(n), why=False)}</div>'
         f'<h3 class="small gap-top">Least complete</h3>'
         f'<div class="gap-sm">{_fund_table(fc.tail(n).iloc[::-1])}</div>'
-        f"<details><summary>All {len(fc)} funds</summary>{_fund_table(fc)}</details></section>"
+        f"<details><summary>All {len(d.fund_completeness)} funds by GP</summary>"
+        f"{_funds_by_gp(d)}</details></section>"
     )
 
 
@@ -359,6 +438,7 @@ def _scope(d: ReportData) -> str:
         f'{len(d.datapoints) - n_empty} '
         f'datapoints and {n_empty} empty source fields.</li>'
         '<li>Completeness, validity, internal consistency and plausibility.</li>'
+        '<li>Fund coverage and GP attribution against the GP reference file.</li>'
         '<li>Repeatable: the same checks and this report are generated for each quarter.</li></ul></div>'
         '<div><h3 class="small">What it does not cover</h3><ul>'
         "<li>Agreement with managers' source reports or audited accounts.</li>"
@@ -387,7 +467,7 @@ def render_html(d: ReportData, generated: pd.Timestamp) -> str:
         f'<div class="eyebrow">Data quality review · {_e(d.period_label)}</div>'
         '<h1>Custom RE fund KPI extract: is it fit for use?</h1>'
         f'<dl class="meta">{meta_html}</dl>'
-        f"{_verdict(d)}{_figures(d)}{_usability(d)}{_findings(d)}{_fund_completeness(d)}"
+        f"{_verdict(d)}{_figures(d)}{_usability(d)}{_findings(d)}{_gp_completeness(d)}{_fund_completeness(d)}"
         f"{_datapoint_completeness(d)}{_register(d)}{_checks(d)}"
         f"{_next_steps(d)}{_scope(d)}"
         f'<footer>Generated by <code>app/run_dq.py</code> from {_e(d.source_name)}. Item-level results with '

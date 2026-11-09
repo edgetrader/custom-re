@@ -126,3 +126,16 @@ def raw() -> pd.DataFrame:
     """Valid raw extract: one monthly-projection fund and one quarterly."""
     rows = build_fund("Fund A", monthly=True) + build_fund("Fund B", monthly=False)
     return pd.DataFrame(rows)
+
+
+def ref_for(raw: pd.DataFrame) -> pd.DataFrame:
+    """GP reference listing exactly the funds in `raw`, each under its own GP ("GP 1", "GP 2", ...)."""
+    funds = sorted(raw["Company"].dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique())
+    gps = [f"GP {i}" for i in range(1, len(funds) + 1)]
+    return pd.DataFrame({"excel_row": range(2, len(funds) + 2), "gp": gps, "fund": funds})
+
+
+def write_reference(path: Path, rows: list[tuple[str, str]]) -> Path:
+    """Write a reference workbook in the source format: sheet "Fund Name", columns GP Name and Fund Name."""
+    pd.DataFrame(rows, columns=["GP Name", "Fund Name"]).to_excel(path, sheet_name="Fund Name", index=False)
+    return path

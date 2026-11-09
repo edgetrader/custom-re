@@ -49,12 +49,13 @@ def parse_period(text: str) -> Period:
 
 @dataclass(frozen=True)
 class Settings:
-    """Resolved folder locations and the extract naming pattern."""
+    """Resolved folder locations, the extract naming pattern and the GP reference file."""
 
     data_dir: Path
     output_dir: Path
     rules_file: Path
     input_pattern: str
+    reference_file: Path
 
     def input_path(self, period: Period) -> Path:
         """Extract file expected for `period`."""
@@ -75,7 +76,7 @@ def load_settings(path: str | Path, root: str | Path) -> Settings:
     if not isinstance(raw, dict):
         raise ValueError(f"{path} must be a mapping of setting names to values")
 
-    required = ["data_dir", "output_dir", "rules_file", "input_pattern"]
+    required = ["data_dir", "output_dir", "rules_file", "input_pattern", "reference_file"]
     missing = [k for k in required if not raw.get(k)]
     if missing:
         raise ValueError(f"{path} is missing settings: {missing}")
@@ -98,4 +99,5 @@ def load_settings(path: str | Path, root: str | Path) -> Settings:
         output_dir=resolve(raw["output_dir"]),
         rules_file=resolve(raw["rules_file"]),
         input_pattern=raw["input_pattern"],
+        reference_file=resolve(raw["reference_file"]),
     )

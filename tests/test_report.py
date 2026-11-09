@@ -4,12 +4,13 @@ from app.run_dq import main
 from custom_re.checks import fund_metrics, run_all, summarise
 from custom_re.loader import tidy
 from custom_re.report import write_report
+from tests.conftest import ref_for
 
 
 def test_write_report_keeps_formula_like_text_as_text(raw, rules, tmp_path):
     raw.loc[raw["Datapoint.Name"] == "Country", "Value String"] = "=HYPERLINK(\"x\")"
     df = tidy(raw)
-    issues = run_all(raw, df, rules)
+    issues = run_all(raw, df, rules, ref_for(raw))
     path = tmp_path / "r.xlsx"
     write_report(path, summarise(issues), issues, fund_metrics(df))
     wb = openpyxl.load_workbook(path)
@@ -21,7 +22,7 @@ def test_write_report_keeps_formula_like_text_as_text(raw, rules, tmp_path):
 def test_main_input_override_keeps_period_output_folder(raw, tmp_path):
     src = tmp_path / "anything.xlsx"
     raw.to_excel(src, sheet_name="KPI", index=False)
-    assert main(["Q2 2026", "--settings", str(_settings(tmp_path)), "--input", str(src)]) == 1
+    assert main(["Q2 2026", "--settings", str(_settings(tmp_path)), "--input", str(src)]) == 0
     assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
 
 
@@ -61,14 +62,16 @@ def test_main_html_failure_keeps_excel_and_exit_code(raw, tmp_path, monkeypatch,
 
 def _settings(tmp_path, pattern="Extract_{period}.xlsx"):
     """Settings file pointing data, output and rules into tmp_path / the real rules."""
-    from tests.conftest import ROOT
+    from tests.conftest import ROOT, write_reference
 
+    ref = write_reference(tmp_path / "GP_Reference.xlsx", [("GP One", "Fund A"), ("GP Two", "Fund B")])
     path = tmp_path / "settings.yaml"
     path.write_text(
         f"data_dir: {tmp_path / 'data'}\n"
         f"output_dir: {tmp_path / 'out'}\n"
         f"rules_file: {ROOT / 'config' / 'dq_rules.yaml'}\n"
         f'input_pattern: "{pattern}"\n'
+        f"reference_file: {ref}\n"
     )
     return path
 
@@ -76,8 +79,8 @@ def _settings(tmp_path, pattern="Extract_{period}.xlsx"):
 def test_main_reads_period_file_and_writes_period_folder(raw, tmp_path):
     (tmp_path / "data").mkdir()
     raw.to_excel(tmp_path / "data" / "Extract_2026Q2.xlsx", sheet_name="KPI", index=False)
-    # Real rules expect 60 funds, so the two-fund fixture must exit with an error code.
-    assert main(["Q2 2026", "--settings", str(_settings(tmp_path))]) == 1
+    # The expected funds come from the reference (the fixture's two funds), so the run is clean.
+    assert main(["Q2 2026", "--settings", str(_settings(tmp_path))]) == 0
     assert (tmp_path / "out" / "2026Q2" / "dq_report.xlsx").exists()
     assert (tmp_path / "out" / "2026Q2" / "dq_management_report.html").exists()
     sheets = openpyxl.load_workbook(tmp_path / "out" / "2026Q2" / "dq_report.xlsx").sheetnames

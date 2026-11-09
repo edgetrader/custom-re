@@ -3,11 +3,12 @@ import pytest
 
 from custom_re.checks import CHECK_GROUPS, run_all, summarise
 from custom_re.loader import tidy
+from tests.conftest import ref_for
 
 
 def _flags(raw: pd.DataFrame, rules) -> set[str]:
     """Checks raising error or warning issues on a raw frame."""
-    issues = run_all(raw, tidy(raw), rules)
+    issues = run_all(raw, tidy(raw), rules, ref_for(raw))
     return set(issues.loc[issues["severity"].isin(["error", "warning"]), "check"])
 
 
@@ -21,7 +22,7 @@ def _set(raw, fund, dp, value, col="Value Num", a1=None):
 
 
 def test_valid_fixture_has_no_errors_or_warnings(raw, rules):
-    issues = run_all(raw, tidy(raw), rules)
+    issues = run_all(raw, tidy(raw), rules, ref_for(raw))
     assert set(issues["severity"].astype(str)) <= {"info"}
     # Monthly and quarterly funds are both accepted and reported as a mix.
     assert "projection_frequency_mix" in set(issues["check"])
@@ -105,7 +106,7 @@ def test_occupancy_for_unknown_sector(raw, rules):
 
 
 def test_summary_lists_every_check(raw, rules):
-    summary = summarise(run_all(raw, tidy(raw), rules))
+    summary = summarise(run_all(raw, tidy(raw), rules, ref_for(raw)))
     assert set(CHECK_GROUPS) <= set(summary["check"])
     assert summary.loc[summary["check"] == "nav_exceeds_gav", "status"].item() == "PASS"
     assert summary["group"].notna().all()
@@ -115,7 +116,7 @@ def test_summary_lists_every_check(raw, rules):
 
 
 def _issues(raw, rules):
-    return run_all(raw, tidy(raw), rules)
+    return run_all(raw, tidy(raw), rules, ref_for(raw))
 
 
 @pytest.mark.parametrize(

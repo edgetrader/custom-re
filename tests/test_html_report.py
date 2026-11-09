@@ -6,12 +6,13 @@ from custom_re.checks import run_all, summarise
 from custom_re.html_report import render_html, write_html
 from custom_re.insights import build_report
 from custom_re.loader import tidy
+from tests.conftest import ref_for
 
 
 def _report(raw, rules, source="x.xlsx"):
     df = tidy(raw)
-    issues = run_all(raw, df, rules)
-    return build_report(raw, df, issues, summarise(issues), rules, "Q2 2026", source)
+    issues = run_all(raw, df, rules, ref_for(raw))
+    return build_report(raw, df, issues, summarise(issues), rules, ref_for(raw), "Q2 2026", source)
 
 
 def test_render_contains_sections_and_findings(raw, rules):
