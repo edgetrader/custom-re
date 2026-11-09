@@ -85,7 +85,7 @@ def test_main_reads_period_file_and_writes_period_folder(raw, tmp_path):
     assert (tmp_path / "out" / "2026Q2" / "dq_management_report.html").exists()
     sheets = openpyxl.load_workbook(tmp_path / "out" / "2026Q2" / "dq_report.xlsx").sheetnames
     assert sheets == ["Summary", "1 Reference Check", "2 Completeness", "3 Datapoint Usability",
-                      "3 Fund Detail", "Actions", "Issues", "Checks"]
+                      "3 Fund Detail", "Issues", "Checks"]
 
 
 def test_main_flags_extract_from_wrong_quarter(raw, tmp_path):

@@ -30,8 +30,8 @@ The report has three steps, all per fund (amounts in different currencies are ne
 2. Completeness: for each fund, how many of the 36 datapoints have a value, placed in a band (>90%, >75%, >50%, 50% or less) with the missing datapoints listed. A zero counts as a value, and so does a blank or missing Bad debts (no bad debt). For the scheduled amounts (Debt maturity value, Capital call amount, Distribution amount) a blank, NA or zero amount on a schedule date means nothing falls on that date, so it is a value; a fund with no rows for one of them is still a gap (not reported).
 3. Datapoint usability, for the funds in the first band (>90%): for each of the 36 datapoints, how many of those funds have a value (count and %), a rating of Good, Use with caution or Unusable (worst case across funds), the funds it is usable for, why their values are usable (what they were validated against, in plain words), and each problem fund with its reason in plain words.
 
-- `dq_report.xlsx` has eight sheets: Summary, 1 Reference Check, 2 Completeness, 3 Datapoint Usability, 3 Fund Detail (one row per fund and datapoint, with reasons and notes), Actions, Issues (one row per finding with severity, GP, fund, datapoint and Excel row) and Checks (one row per check with PASS / INFO / FLAG). The console prints the one-line summary.
-- `dq_management_report.html` is a self-contained management report generated from the data (no external requests, light and dark themes). It has a header (source, reporting date, error and warning counts), the one-line summary, Step 1, Step 2 (band counts, then one table per band, funds with gaps first), and Step 3 (the 36 datapoints by category: funds with value and %, rating, the funds it is usable for, and why). The actions for managers are in the workbook's Actions sheet only.
+- `dq_report.xlsx` has seven sheets: Summary, 1 Reference Check, 2 Completeness, 3 Datapoint Usability, 3 Fund Detail (one row per fund and datapoint, with reasons and notes), Issues (one row per finding with severity, GP, fund, datapoint and Excel row) and Checks (one row per check with PASS / INFO / FLAG). The console prints the one-line summary.
+- `dq_management_report.html` is a self-contained management report generated from the data (no external requests, light and dark themes). It has a header (source, reporting date, error and warning counts), the one-line summary, Step 1, Step 2 (band counts, then one table per band, funds with gaps first), and Step 3 (the 36 datapoints by category: funds with value and %, rating, the funds it is usable for, and why).
 
 Exit codes: 0 clean, 1 if any error-severity issue is found, 2 for a bad period, bad settings, or a missing or unreadable input or reference file, 3 if the data is clean but the HTML report failed (the Excel report is still written).
 
@@ -98,7 +98,7 @@ src/custom_re/
   steps.py      reference_check, completeness (bands), usability (ratings)
   facts.py      datapoint names and helpers for the step 3 notes
   reference.py  read_reference, gp_map, add_gp (GP reference workbook)
-  insights.py   build_report: summary, the three step tables and actions (ReportData)
+  insights.py   build_report: summary and the three step tables (ReportData)
   html_report.py  render_html, write_html: the HTML management report
   settings.py   Period parsing and settings loading
 app/run_dq.py   command-line entry point

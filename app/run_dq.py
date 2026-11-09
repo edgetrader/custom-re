@@ -113,7 +113,7 @@ def _flat(usab: pd.DataFrame) -> pd.DataFrame:
 def workbook_sheets(
     report: ReportData, issues: pd.DataFrame, checks: pd.DataFrame
 ) -> dict[str, pd.DataFrame]:
-    """Build the workbook's sheets in order: summary, the three steps, actions, then every check result."""
+    """Build the workbook's sheets in order: summary, the three steps, then every check result."""
     summary = pd.DataFrame(
         [("Period", report.period_label), ("Source", report.source_name),
          ("Reporting date", f"{report.reporting_date:%Y-%m-%d}"), ("Summary", report.summary),
@@ -126,7 +126,6 @@ def workbook_sheets(
         "2 Completeness": report.completeness,
         "3 Datapoint Usability": _flat(report.usability),
         "3 Fund Detail": report.detail,
-        "Actions": pd.DataFrame({"action": report.actions}),
         "Issues": issues,
         "Checks": checks,
     }
