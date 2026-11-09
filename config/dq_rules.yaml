@@ -7,7 +7,7 @@
 # The fund universe expected in each extract.
 expected_fund_count: 60
 
-valid_currencies: [AUD, EUR, GBP, HKD, JPY, SGD, USD]
+valid_currencies: [AUD, EUR, GBP, HKD, JPY, NOK, SGD, USD]
 
 # Datapoints per category and the value field each must use (num | date | str).
 datapoints:
